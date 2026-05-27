@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude Code internals
+CLAUDE.md
+.claude/
+
+# Archivos sueltos de RViz fuera del paquete
+/puzzlebot_rviz.rviz

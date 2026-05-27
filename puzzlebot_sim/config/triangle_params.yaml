@@ -1,0 +1,19 @@
+# Trayectoria TRIANGULO equilatero de 1m de lado
+point_generator:
+  ros__parameters:
+    waypoints_x: [1.0, 0.5, 0.0]
+    waypoints_y: [0.0, 0.866, 0.0]
+    loop_trajectory: true
+    startup_delay: 1.5
+    frame_id: odom
+
+control:
+  ros__parameters:
+    max_linear_vel: 0.2
+    max_angular_vel: 1.0
+    k_linear: 0.9
+    k_angular: 5.0
+    yaw_tolerance: 0.05
+    position_tolerance: 0.08
+    stabilize_time: 0.5
+    control_rate: 20.0

@@ -1,0 +1,20 @@
+# Trayectoria PENTAGONO regular centrado en (0,0), "radio" ~0.8 m
+# Vertices a 0, 72, 144, 216, 288 grados
+point_generator:
+  ros__parameters:
+    waypoints_x: [0.8,   0.247, -0.647, -0.647,  0.247]
+    waypoints_y: [0.0,   0.761,  0.470, -0.470, -0.761]
+    loop_trajectory: true
+    startup_delay: 1.5
+    frame_id: odom
+
+control:
+  ros__parameters:
+    max_linear_vel: 0.2
+    max_angular_vel: 1.0
+    k_linear: 0.9
+    k_angular: 5.0
+    yaw_tolerance: 0.05
+    position_tolerance: 0.08
+    stabilize_time: 0.5
+    control_rate: 20.0
