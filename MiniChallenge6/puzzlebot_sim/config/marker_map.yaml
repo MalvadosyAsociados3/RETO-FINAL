@@ -1,0 +1,29 @@
+# Mapa de markers ArUco conocidos en el frame 'odom' (o 'map').
+#
+# Para el mundo puzzlebot_aruco_markers.world los markers vienen colocados:
+#   aruco_marker_0:  ( 2.5, -0.5)  yaw = pi
+#   aruco_marker_1:  ( 2.5,  2.5)  yaw = 3*pi/2  (-pi/2)
+#   aruco_marker_2:  (-0.5,  2.5)  yaw = 0
+#   aruco_marker_3:  (-0.5, -0.5)  yaw = pi/2
+#
+# Z = 0.091 m (la altura en la que estan los markers en el world).
+#
+# El id que va aqui debe ser el numero que devuelve el detector de ArUco
+# (cv2.aruco) en el campo `ids`. Si en tu mundo o robot real los markers
+# tienen IDs distintos, cambia los enteros aqui sin tocar el codigo.
+
+ekf_localisation:
+  ros__parameters:
+    # Mapa de markers: tres listas paralelas indexadas por marker.
+    marker_ids:    [0,    1,     2,    3]
+    marker_xs:     [2.5,  2.5,  -0.5, -0.5]
+    marker_ys:     [-0.5, 2.5,   2.5, -0.5]
+    marker_yaws:   [3.1416, -1.5708, 0.0, 1.5708]
+
+    # Offset de la camara optica respecto a base_footprint, en metros.
+    # camera_x es positivo hacia adelante, camera_y hacia la izquierda.
+    # En la mayoria de Puzzlebots la camara va al frente, ligeramente
+    # arriba (la altura no afecta el EKF 2D).
+    camera_x:     0.10
+    camera_y:     0.0
+    camera_yaw:   0.0

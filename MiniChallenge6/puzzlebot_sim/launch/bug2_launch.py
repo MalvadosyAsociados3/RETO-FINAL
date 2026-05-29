@@ -1,27 +1,13 @@
 """
-MINI CHALLENGE 6 - Launch para Bug 0.
+MINI CHALLENGE 6 - Launch para Bug 2.
 
-ASUME que Gazebo (puzzlebot_gazebo de robotec_sim_ws) ya esta corriendo
-en otra terminal:
+ASUME que Gazebo (puzzlebot_gazebo de robotec_sim_ws) ya esta corriendo:
 
     ros2 launch puzzlebot_gazebo gazebo_example_launch.py
 
-Este launch arranca SOLO nuestros nodos:
-  - localisation     (consume /VelocityEncL/R, publica /odom con covarianza, TF)
-  - point_generator  (publica /current_goal con la trayectoria)
-  - bug0             (la estrategia reactiva)
-  - rviz2            (opcional con use_rviz:=false)
+Identico a bug0_launch.py pero arranca el nodo `bug2` en lugar de `bug0`.
 
-Topics de Gazebo (publicados por robotec_sim_ws):
-  /cmd_vel        (Twist)         <- subscribe Gazebo
-  /scan           (LaserScan)     <- publica  Gazebo
-  /VelocityEncL   (Float32)       <- publica  Gazebo (encoder izq)
-  /VelocityEncR   (Float32)       <- publica  Gazebo (encoder der)
-  /odom           (Odometry)      <- publica  Gazebo (lo IGNORAMOS; usamos el de localisation)
-  /ground_truth   (Odometry)      <- publica  Gazebo (referencia opcional)
-
-Remapeos:
-  localisation: wr <- /VelocityEncR, wl <- /VelocityEncL
+Topics y remapeos: ver docstring de bug0_launch.py.
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -40,7 +26,7 @@ def generate_launch_description():
     params_arg = DeclareLaunchArgument(
         'params_file',
         default_value=default_params,
-        description='YAML con parametros (localisation, point_generator, bug0)'
+        description='YAML con parametros (localisation, point_generator, bug2)'
     )
     use_rviz_arg = DeclareLaunchArgument(
         'use_rviz',
@@ -60,7 +46,15 @@ def generate_launch_description():
         use_rviz_arg,
         use_sim_time_arg,
 
-        # Dead reckoning + covarianza
+        # /joint_states -> /VelocityEncL,R (Float32) para localisation.
+        Node(
+            package='puzzlebot_sim',
+            executable='joint_to_encoders',
+            name='joint_to_encoders',
+            parameters=[{'use_sim_time': use_sim_time}],
+            output='screen',
+        ),
+
         Node(
             package='puzzlebot_sim',
             executable='localisation',
@@ -73,7 +67,6 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # Genera secuencia de waypoints
         Node(
             package='puzzlebot_sim',
             executable='point_generator',
@@ -82,16 +75,14 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # Bug 0 reactivo
         Node(
             package='puzzlebot_sim',
-            executable='bug0',
-            name='bug0',
+            executable='bug2',
+            name='bug2',
             parameters=[params, {'use_sim_time': use_sim_time}],
             output='screen',
         ),
 
-        # RViz (opcional)
         Node(
             package='rviz2',
             executable='rviz2',
