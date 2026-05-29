@@ -55,7 +55,7 @@ bug0:
     wall_sector_min_deg: 60.0     # sector LiDAR izquierdo (pared izquierda)
     wall_sector_max_deg: 120.0
     clear_path_cone_deg: 50.0     # cono para decidir "camino al goal libre"
-    clear_path_distance: 0.8
+    clear_path_distance: 0.8      # 80 cm libres frente al goal para salir
     k_linear: 0.5                 # P go-to-goal
     k_angular: 1.5
     max_linear: 0.18
@@ -63,7 +63,7 @@ bug0:
     align_threshold_deg: 25.0     # si error angular > este -> gira en sitio
     wall_k: 2.5                   # P wall following
     wall_linear: 0.10
-    wall_progress_threshold: 0.10 # anti-oscilacion al salir de FOLLOW_WALL
+    wall_progress_threshold: 0.15 # exige 15 cm de progreso real antes de salir (anti-oscilacion)
 
 # --- Mini Challenge 6: Bug 2 ---
 bug2:

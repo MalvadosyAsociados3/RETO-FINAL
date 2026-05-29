@@ -1,0 +1,92 @@
+# Parametros para el Final Challenge.
+# Trayectoria cerrada de 5 waypoints alrededor de los 4 markers ArUco
+# del mundo puzzlebot_aruco_markers, sin segmentos rectos paralelos y
+# pasando cerca de cada marker para alimentar el EKF.
+
+# --- Encoders -> Float32 shim ---
+joint_to_encoders:
+  ros__parameters:
+    left_joint:  wheel_left_joint
+    right_joint: wheel_right_joint
+
+# --- EKF localisation ---
+ekf_localisation:
+  ros__parameters:
+    wheel_radius: 0.05
+    wheel_base:   0.19
+    update_rate:  50.0
+    publish_map_odom_tf: true
+    odom_frame: odom
+    base_frame: base_footprint
+    world_frame: map
+    initial_x:     0.0
+    initial_y:     0.0
+    initial_theta: 0.0
+    # Ruido por rueda
+    kr: 0.02
+    kl: 0.02
+    # Camara: offset respecto a base_footprint
+    camera_x:    0.10
+    camera_y:    0.0
+    camera_yaw:  0.0
+    # Ruido de medicion ArUco (m^2)
+    aruco_var_base:      0.005
+    aruco_var_per_meter: 0.003
+    aruco_max_distance:  3.5
+    # Mapa de markers (mundo puzzlebot_aruco_markers.world)
+    marker_ids:   [0,    1,     2,    3]
+    marker_xs:    [2.5,  2.5,  -0.5, -0.5]
+    marker_ys:    [-0.5, 2.5,   2.5, -0.5]
+    marker_yaws:  [3.1416, -1.5708, 0.0, 1.5708]
+
+# --- ArUco detector (sim) ---
+aruco_detector:
+  ros__parameters:
+    marker_size: 0.18        # lado del marker en metros (aruco_marker_X mide 0.18)
+    dictionary_name: ''      # '' = auto-detectar
+    publish_debug_image: true
+    image_topic: 'camera'
+    info_topic:  'camera_info'
+
+# --- Multi-point nav: go-to-goal -> /pre_cmd_vel ---
+multi_point_nav:
+  ros__parameters:
+    control_rate: 20.0
+    goal_tolerance: 0.20
+    k_linear:  0.45
+    k_angular: 1.5
+    max_linear: 0.18
+    max_angular: 1.0
+    align_threshold_deg: 25.0
+
+# --- Obstacle avoidance: /pre_cmd_vel -> /cmd_vel ---
+obstacle_avoidance:
+  ros__parameters:
+    control_rate: 20.0
+    obstacle_distance: 0.5
+    forward_cone_deg: 30.0
+    wall_target_distance: 0.35
+    wall_sector_min_deg: 60.0
+    wall_sector_max_deg: 120.0
+    wall_k: 2.5
+    wall_linear: 0.10
+    max_angular: 1.0
+    clear_front_hysteresis: 1.3
+    publish_zero_when_idle: true
+
+# --- Punto generador: trayectoria cerrada, NO recta y cubriendo todos
+#     los markers (cada waypoint queda en un cuadrante distinto). ---
+point_generator:
+  ros__parameters:
+    waypoints_x: [ 1.5,  2.2,  0.5, -0.3,  0.0]
+    waypoints_y: [ 0.5,  1.8,  2.0,  0.8,  0.0]
+    loop_trajectory: true
+    startup_delay: 2.0
+    frame_id: odom
+
+# --- Visualizador de covarianza ---
+covariance_visualizer:
+  ros__parameters:
+    sigma_scale: 2.0   # 2-sigma (~95%)
+    min_axis: 0.05
+    marker_frame: ''   # vacio = usar el frame del odom (odom)

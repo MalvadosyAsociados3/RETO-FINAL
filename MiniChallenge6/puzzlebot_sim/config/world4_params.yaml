@@ -1,0 +1,91 @@
+# Parametros para obstacle_avoidance_4.world
+# El mundo coloca el goal_marker en (0, -2.45) al SUR del spawn.
+# El robot arranca entre la herradura (obstaculos al norte y=0.7..2.6) y un
+# muro solitario en (0, -0.9) que bloquea el paso directo al goal.
+#
+# Trayectoria: ir DIRECTO al goal_marker. Bug 0 / Bug 2 deben rodear el muro
+# en (0, -0.9) para llegar.
+
+puzzlebot_sim:
+  ros__parameters:
+    wheel_radius: 0.05
+    wheel_base: 0.19
+    update_rate: 50.0
+    publish_tf: false
+
+localisation:
+  ros__parameters:
+    wheel_radius: 0.05
+    wheel_base: 0.19
+    update_rate: 50.0
+    publish_map_odom_tf: true
+    odom_frame: odom
+    base_frame: base_footprint
+    world_frame: map
+    initial_x: 0.0
+    initial_y: 0.0
+    initial_theta: 0.0
+    kr: 0.02
+    kl: 0.02
+
+point_generator:
+  ros__parameters:
+    # GOAL: marcador visual del mundo (cuadrado gris al sur)
+    waypoints_x: [0.0]
+    waypoints_y: [-2.45]
+    loop_trajectory: false
+    startup_delay: 1.5
+    frame_id: odom
+
+control:
+  ros__parameters:
+    max_linear_vel: 0.2
+    max_angular_vel: 1.0
+    k_linear: 0.9
+    k_angular: 5.0
+    yaw_tolerance: 0.05
+    position_tolerance: 0.08
+    stabilize_time: 0.5
+    control_rate: 20.0
+
+# --- Mini Challenge 6: Bug 0 ---
+bug0:
+  ros__parameters:
+    control_rate: 20.0
+    goal_tolerance: 0.20
+    obstacle_distance: 0.5
+    forward_cone_deg: 30.0
+    wall_target_distance: 0.35
+    wall_sector_min_deg: 60.0
+    wall_sector_max_deg: 120.0
+    clear_path_cone_deg: 50.0
+    clear_path_distance: 0.8
+    k_linear: 0.5
+    k_angular: 1.5
+    max_linear: 0.18
+    max_angular: 1.0
+    align_threshold_deg: 25.0
+    wall_k: 2.5
+    wall_linear: 0.10
+    wall_progress_threshold: 0.15
+
+# --- Mini Challenge 6: Bug 2 ---
+bug2:
+  ros__parameters:
+    control_rate: 20.0
+    goal_tolerance: 0.20
+    obstacle_distance: 0.5
+    forward_cone_deg: 30.0
+    wall_target_distance: 0.35
+    wall_sector_min_deg: 60.0
+    wall_sector_max_deg: 120.0
+    m_line_tolerance: 0.50      # mas laxa: el robot rodea obstaculos y vuelve cerca de la linea M
+    hit_min_distance: 0.40
+    progress_threshold: 0.20
+    k_linear: 0.5
+    k_angular: 1.5
+    max_linear: 0.18
+    max_angular: 1.0
+    align_threshold_deg: 25.0
+    wall_k: 2.5
+    wall_linear: 0.10

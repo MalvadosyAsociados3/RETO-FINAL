@@ -1,25 +1,29 @@
 """
-MINI CHALLENGE 6 - BUG 0 NAVIGATION ALGORITHM
+MINI CHALLENGE 6 - BUG 2 NAVIGATION ALGORITHM
+
+Diferencia vs Bug 0: usa la "linea M" (start -> goal). Cuando encuentra
+un obstaculo, registra un hit_point H, sigue la pared, y solo deja la
+pared cuando re-intersecta la linea M en un leave_point L MAS CERCANO al
+goal que H.
 
 Suscribe:
-  /odom         (nav_msgs/Odometry)       - pose estimada (localisation con covarianza)
-  /scan         (sensor_msgs/LaserScan)   - LiDAR (Gazebo de robotec_sim_ws)
-  /current_goal (geometry_msgs/PoseStamped) - waypoint actual (point_generator)
+  /odom         (nav_msgs/Odometry)        - pose estimada (localisation)
+  /scan         (sensor_msgs/LaserScan)    - LiDAR (Gazebo robotec_sim_ws)
+  /current_goal (geometry_msgs/PoseStamped) - waypoint (point_generator)
 
 Publica:
-  /cmd_vel      (geometry_msgs/Twist)     - comando al simulador
-  /goal_reached (std_msgs/Empty)          - handshake con point_generator
+  /cmd_vel      (geometry_msgs/Twist)      - comando al simulador
+  /goal_reached (std_msgs/Empty)           - handshake con point_generator
 
 State machine:
   GO_TO_GOAL:
-    - Apuntar al objetivo + avanzar con controlador P (NumPy puro).
-    - Si hay obstaculo en el cono frontal (+-15 deg) a menos de 0.5 m -> FOLLOW_WALL.
+    - Sigue la linea M (start -> goal) con controlador P.
+    - Obstaculo en cono frontal -> registra H, salta a FOLLOW_WALL.
   FOLLOW_WALL:
-    - Mantener la pared a la IZQUIERDA del robot a ~0.35 m (P sobre el error de distancia).
-    - Si el cono hacia el goal queda libre Y nos hemos acercado al goal vs el hit_point,
-      regresar a GO_TO_GOAL.
+    - Pared a la IZQUIERDA del robot a wall_target.
+    - Si re-intersecta la M-line con dist(actual, goal) < dist(H, goal),
+      vuelve a GO_TO_GOAL.
 
-Wall following: pared a la izquierda (obstaculo a mano izquierda del robot).
 Restriccion del challenge: solo NumPy + libreria estandar de Python.
 """
 
@@ -46,7 +50,7 @@ def normalize_angle(a):
     return math.atan2(math.sin(a), math.cos(a))
 
 
-class Bug0(Node):
+class Bug2(Node):
 
     STATE_GO_TO_GOAL = 0
     STATE_FOLLOW_WALL = 1
@@ -59,7 +63,7 @@ class Bug0(Node):
     }
 
     def __init__(self):
-        super().__init__('bug0')
+        super().__init__('bug2')
 
         # --- Parametros ---
         self.declare_parameter('control_rate', 20.0)
@@ -69,8 +73,9 @@ class Bug0(Node):
         self.declare_parameter('wall_target_distance', 0.35)
         self.declare_parameter('wall_sector_min_deg', 60.0)
         self.declare_parameter('wall_sector_max_deg', 120.0)
-        self.declare_parameter('clear_path_cone_deg', 50.0)
-        self.declare_parameter('clear_path_distance', 0.8)
+        self.declare_parameter('m_line_tolerance', 0.10)
+        self.declare_parameter('hit_min_distance', 0.20)
+        self.declare_parameter('progress_threshold', 0.10)
         self.declare_parameter('k_linear', 0.5)
         self.declare_parameter('k_angular', 1.5)
         self.declare_parameter('max_linear', 0.18)
@@ -78,7 +83,6 @@ class Bug0(Node):
         self.declare_parameter('align_threshold_deg', 25.0)
         self.declare_parameter('wall_k', 2.5)
         self.declare_parameter('wall_linear', 0.10)
-        self.declare_parameter('wall_progress_threshold', 0.10)
 
         rate = float(self.get_parameter('control_rate').value)
         self.goal_tol = float(self.get_parameter('goal_tolerance').value)
@@ -87,8 +91,9 @@ class Bug0(Node):
         self.wall_target = float(self.get_parameter('wall_target_distance').value)
         self.wall_sec_min = math.radians(float(self.get_parameter('wall_sector_min_deg').value))
         self.wall_sec_max = math.radians(float(self.get_parameter('wall_sector_max_deg').value))
-        self.clear_cone = math.radians(float(self.get_parameter('clear_path_cone_deg').value))
-        self.clear_dist = float(self.get_parameter('clear_path_distance').value)
+        self.m_line_tol = float(self.get_parameter('m_line_tolerance').value)
+        self.hit_min_dist = float(self.get_parameter('hit_min_distance').value)
+        self.progress_thr = float(self.get_parameter('progress_threshold').value)
         self.kv = float(self.get_parameter('k_linear').value)
         self.kw = float(self.get_parameter('k_angular').value)
         self.vmax = float(self.get_parameter('max_linear').value)
@@ -96,7 +101,6 @@ class Bug0(Node):
         self.align_thr = math.radians(float(self.get_parameter('align_threshold_deg').value))
         self.wall_k = float(self.get_parameter('wall_k').value)
         self.wall_v = float(self.get_parameter('wall_linear').value)
-        self.wall_progress = float(self.get_parameter('wall_progress_threshold').value)
 
         # --- Estado del robot ---
         self.x = 0.0
@@ -110,15 +114,23 @@ class Bug0(Node):
         self.scan_angle_inc = 0.0
         self.scan_range_max = 10.0
 
-        # Goal
+        # Goal + linea M
         self.goal_x = None
         self.goal_y = None
+        self.start_x = None
+        self.start_y = None
+        self.m_dx = 0.0
+        self.m_dy = 0.0
+        self.m_len = 0.0
+
+        # Hit point
+        self.hit_x = None
+        self.hit_y = None
+        self.hit_dist_to_goal = None
 
         # State machine
         self.state = self.STATE_GO_TO_GOAL
-        self.last_state = None
         self.goal_reached_published = False
-        self.wall_follow_start_dist_to_goal = None
 
         # --- QoS ---
         reliable_qos = QoSProfile(
@@ -149,8 +161,8 @@ class Bug0(Node):
         self.timer = self.create_timer(1.0 / rate, self.tick)
 
         self.get_logger().info(
-            f'Bug 0 iniciado: obs_dist={self.obs_dist} m, '
-            f'cono_frontal={math.degrees(self.front_cone):.0f} deg, '
+            f'Bug 2 iniciado: obs_dist={self.obs_dist} m, '
+            f'M-line_tol={self.m_line_tol} m, '
             f'wall_target={self.wall_target} m (IZQUIERDA), '
             f'ctrl_rate={rate} Hz'
         )
@@ -164,7 +176,6 @@ class Bug0(Node):
         self.have_odom = True
 
     def scan_cb(self, msg: LaserScan):
-        # Sustituye inf/nan por range_max para poder usar np.min sin problemas
         ranges = np.asarray(msg.ranges, dtype=np.float32)
         bad = ~np.isfinite(ranges)
         ranges = np.where(bad, msg.range_max, ranges)
@@ -176,22 +187,31 @@ class Bug0(Node):
     def goal_cb(self, msg: PoseStamped):
         new_x = float(msg.pose.position.x)
         new_y = float(msg.pose.position.y)
-        # Trata como goal nuevo si cambio
         if (self.goal_x is None or
                 abs(new_x - self.goal_x) > 0.01 or
                 abs(new_y - self.goal_y) > 0.01):
             self.goal_x = new_x
             self.goal_y = new_y
+            # Reset M-line with current pos as start (recalculo cuando hay un goal nuevo).
+            self.start_x = self.x
+            self.start_y = self.y
+            self.m_dx = self.goal_x - self.start_x
+            self.m_dy = self.goal_y - self.start_y
+            self.m_len = math.hypot(self.m_dx, self.m_dy)
+            self.hit_x = None
+            self.hit_y = None
+            self.hit_dist_to_goal = None
             self.state = self.STATE_GO_TO_GOAL
             self.goal_reached_published = False
-            self.wall_follow_start_dist_to_goal = None
             self.get_logger().info(
-                f'Bug 0: nuevo goal ({new_x:.2f}, {new_y:.2f})')
+                f'Bug 2: nuevo goal ({new_x:.2f}, {new_y:.2f}) | '
+                f'linea M start=({self.start_x:.2f},{self.start_y:.2f}) '
+                f'len={self.m_len:.2f}m'
+            )
 
     # ---------------------------------------------------- LiDAR utilities
 
     def _sector_min(self, angle_lo: float, angle_hi: float) -> float:
-        """Devuelve el rango minimo en el sector angular [angle_lo, angle_hi] rad."""
         if self.scan_ranges is None or self.scan_angle_inc == 0.0:
             return float('inf')
         n = len(self.scan_ranges)
@@ -214,22 +234,27 @@ class Bug0(Node):
         return self._sector_min(self.wall_sec_min, self.wall_sec_max)
 
     def goal_direction_angle(self) -> float:
-        """Angulo hacia el goal en el frame del robot ([-pi, pi])."""
         dx = self.goal_x - self.x
         dy = self.goal_y - self.y
-        ang_world = math.atan2(dy, dx)
-        return normalize_angle(ang_world - self.theta)
+        return normalize_angle(math.atan2(dy, dx) - self.theta)
 
     def distance_to_goal(self) -> float:
         return math.hypot(self.goal_x - self.x, self.goal_y - self.y)
 
-    def path_to_goal_clear(self) -> bool:
-        """Cono en direccion al goal mas alla de clear_path_distance."""
-        if self.scan_ranges is None or self.scan_angle_inc == 0.0:
-            return False
-        goal_dir = self.goal_direction_angle()
-        half = self.clear_cone / 2.0
-        return self._sector_min(goal_dir - half, goal_dir + half) > self.clear_dist
+    def distance_to_m_line(self) -> float:
+        """Distancia perpendicular del robot a la linea M (start -> goal)."""
+        if self.m_len < 1e-6:
+            return 0.0
+        # Forma del producto cruzado:
+        #   d = |(m_dx)*(start_y - y) - (start_x - x)*(m_dy)| / |M|
+        num = abs(self.m_dx * (self.start_y - self.y)
+                  - (self.start_x - self.x) * self.m_dy)
+        return num / self.m_len
+
+    def distance_to_hit(self) -> float:
+        if self.hit_x is None:
+            return 0.0
+        return math.hypot(self.x - self.hit_x, self.y - self.hit_y)
 
     # ----------------------------------------------------- Tick principal
 
@@ -238,46 +263,67 @@ class Bug0(Node):
                 self.scan_ranges is None):
             return
 
-        dist = self.distance_to_goal()
+        dist_goal = self.distance_to_goal()
 
         # --- Llegada al goal ---
-        if dist < self.goal_tol:
+        if dist_goal < self.goal_tol:
             if not self.goal_reached_published:
                 self.cmd_pub.publish(Twist())
                 self.reached_pub.publish(Empty())
                 self.goal_reached_published = True
-                self._set_state(self.STATE_GOAL_REACHED)
+                self.state = self.STATE_GOAL_REACHED
                 self.get_logger().info(
-                    f'Bug 0: goal alcanzado en ({self.x:.2f}, {self.y:.2f}), '
-                    f'dist={dist:.2f}m'
-                )
+                    f'Bug 2: goal alcanzado en ({self.x:.2f}, {self.y:.2f})')
             return
 
         # --- Maquina de estados ---
         if self.state == self.STATE_GO_TO_GOAL:
             front = self.front_min()
             if front < self.obs_dist:
-                self.wall_follow_start_dist_to_goal = dist
-                self._set_state(self.STATE_FOLLOW_WALL)
+                # Registra hit point
+                self.hit_x = self.x
+                self.hit_y = self.y
+                self.hit_dist_to_goal = dist_goal
+                self.state = self.STATE_FOLLOW_WALL
                 self.get_logger().info(
-                    f'Bug 0: obstaculo a {front:.2f}m -> FOLLOW_WALL, '
-                    f'hit_dist_to_goal={dist:.2f}m'
+                    f'Bug 2: HIT en ({self.x:.2f},{self.y:.2f}), '
+                    f'd_goal={dist_goal:.2f}m, front={front:.2f}m -> FOLLOW_WALL'
                 )
                 self._wall_follow_step()
             else:
                 self._go_to_goal_step()
 
         elif self.state == self.STATE_FOLLOW_WALL:
-            # Antes de volver a GO_TO_GOAL exigimos que nos hayamos acercado al
-            # goal una cantidad minima desde el hit point (anti-oscilacion).
-            progressed = (
-                self.wall_follow_start_dist_to_goal is not None
-                and dist < self.wall_follow_start_dist_to_goal - self.wall_progress
-            )
-            if progressed and self.path_to_goal_clear():
-                self._set_state(self.STATE_GO_TO_GOAL)
+            # Condiciones canonicas Bug 2 para dejar la pared (LEAVE):
+            # 1. Estamos sobre la linea M (dentro de m_line_tol)
+            # 2. Nos hemos alejado del hit point al menos hit_min_dist (anti-bucle)
+            # 3. Estamos mas cerca del goal que el hit point por margen progress_thr
+            on_m_line = self.distance_to_m_line() < self.m_line_tol
+            away_from_hit = self.distance_to_hit() > self.hit_min_dist
+            closer_to_goal = (self.hit_dist_to_goal is not None and
+                              dist_goal < self.hit_dist_to_goal - self.progress_thr)
+
+            # Salvavidas: si perdimos la pared (espacio abierto delante y a la
+            # izquierda) y ya nos alejamos del hit point, regresar a GO_TO_GOAL
+            # aunque no estemos exactamente sobre la M-line. Evita que el robot
+            # se vaya fuera del mapa por una apertura tras rodear el obstaculo.
+            left = self.left_min()
+            front_clear = self.front_min() > self.obs_dist
+            wall_lost = left > self.wall_target * 3.0 and front_clear
+
+            if on_m_line and away_from_hit and closer_to_goal:
+                self.state = self.STATE_GO_TO_GOAL
                 self.get_logger().info(
-                    f'Bug 0: camino al goal libre, dist={dist:.2f}m -> GO_TO_GOAL')
+                    f'Bug 2: LEAVE (M-line) en ({self.x:.2f},{self.y:.2f}), '
+                    f'd_goal={dist_goal:.2f}m -> GO_TO_GOAL'
+                )
+                self._go_to_goal_step()
+            elif wall_lost and away_from_hit:
+                self.state = self.STATE_GO_TO_GOAL
+                self.get_logger().info(
+                    f'Bug 2: pared perdida en ({self.x:.2f},{self.y:.2f}), '
+                    f'd_goal={dist_goal:.2f}m -> GO_TO_GOAL'
+                )
                 self._go_to_goal_step()
             else:
                 self._wall_follow_step()
@@ -285,20 +331,13 @@ class Bug0(Node):
         elif self.state == self.STATE_GOAL_REACHED:
             self.cmd_pub.publish(Twist())
 
-    def _set_state(self, new_state):
-        if new_state != self.state:
-            self.last_state = self.state
-            self.state = new_state
-
     # ---------------------------------------------------- Acciones de control
 
     def _go_to_goal_step(self):
-        """Controlador P al goal (NumPy puro, sin librerias externas)."""
         dist = self.distance_to_goal()
         ang = self.goal_direction_angle()
 
         if abs(ang) > self.align_thr:
-            # Muy desalineado: gira en sitio (v=0)
             v = 0.0
             w = self.kw * ang
         else:
@@ -314,24 +353,31 @@ class Bug0(Node):
         self.cmd_pub.publish(msg)
 
     def _wall_follow_step(self):
-        """Wall following con la pared a la IZQUIERDA del robot.
+        """Wall following con pared a la IZQUIERDA del robot.
 
-        - Si hay algo en frente cercano: gira a la derecha agresivo.
-        - Si no: P sobre (left_min - wall_target).
-          left_min > target  ->  error>0  ->  w>0  (gira a la izquierda, se acerca a la pared)
-          left_min < target  ->  error<0  ->  w<0  (gira a la derecha, se aleja de la pared)
+        Misma logica que en Bug 0 (vease bug0.py): evita 'circles in open
+        space' cuando entramos a FOLLOW_WALL antes de poder ver la pared
+        por la izquierda.
         """
         front = self.front_min()
-        if front < self.obs_dist * 0.6:
-            # Pared al frente: gira a la derecha en sitio
+        left = self.left_min()
+
+        if front < self.obs_dist:
             msg = Twist()
             msg.linear.x = 0.0
             msg.angular.z = -self.wmax * 0.7
             self.cmd_pub.publish(msg)
             return
 
-        left = self.left_min()
-        error = left - self.wall_target
+        if left > self.wall_target * 3.0:
+            msg = Twist()
+            msg.linear.x = float(self.wall_v * 1.5)
+            msg.angular.z = 0.0
+            self.cmd_pub.publish(msg)
+            return
+
+        error = max(-self.wall_target, min(self.wall_target,
+                                           left - self.wall_target))
         w = self.wall_k * error
         w = max(-self.wmax, min(self.wmax, w))
 
@@ -343,13 +389,12 @@ class Bug0(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Bug0()
+    node = Bug2()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        # Asegura que el robot se detenga al salir
         try:
             node.cmd_pub.publish(Twist())
         except Exception:

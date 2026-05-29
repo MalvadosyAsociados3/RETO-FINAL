@@ -35,6 +35,13 @@ setup(
             'experiment_runner = puzzlebot_sim.experiment_runner:main',
             'bug0 = puzzlebot_sim.bug0:main',
             'bug2 = puzzlebot_sim.bug2:main',
+            'joint_to_encoders = puzzlebot_sim.joint_to_encoders:main',
+            'ekf_localisation = puzzlebot_sim.ekf_localisation:main',
+            'aruco_detector = puzzlebot_sim.aruco_detector:main',
+            'multi_point_nav = puzzlebot_sim.multi_point_nav:main',
+            'obstacle_avoidance = puzzlebot_sim.obstacle_avoidance:main',
+            'covariance_visualizer = puzzlebot_sim.covariance_visualizer:main',
+            'aruco_ros_bridge = puzzlebot_sim.aruco_ros_bridge:main',
         ],
     },
 )
