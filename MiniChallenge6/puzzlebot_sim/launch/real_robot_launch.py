@@ -39,6 +39,7 @@ def generate_launch_description():
         pkg_sim, 'config', 'real_robot_params.yaml',
     )
     default_rviz = os.path.join(pkg_sim, 'rviz', 'final_challenge.rviz')
+    default_map = os.path.join(pkg_sim, 'maps', 'map_maze_real.yaml')
 
     params_arg = DeclareLaunchArgument(
         'params_file', default_value=default_params,
@@ -54,6 +55,10 @@ def generate_launch_description():
     )
     rviz_arg = DeclareLaunchArgument(
         'rviz_config', default_value=default_rviz,
+    )
+    map_arg = DeclareLaunchArgument(
+        'map_yaml', default_value=default_map,
+        description='Mapa OccupancyGrid (.yaml) que publica /map para RViz',
     )
     enable_nav_arg = DeclareLaunchArgument(
         'enable_navigation', default_value='true',
@@ -73,6 +78,33 @@ def generate_launch_description():
         parameters=[{
             'robot_description': ParameterValue(robot_description, value_type=str),
             'use_sim_time': use_sim_time,
+        }],
+        output='screen',
+    )
+
+    # map_server: publica el mapa OccupancyGrid del laberinto en /map para
+    # que RViz pueda mostrarlo y para que el profesor use "2D Pose Estimate"
+    # y "2D Goal Pose" haciendo click sobre el mapa.
+    map_server = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'yaml_filename': LaunchConfiguration('map_yaml'),
+        }],
+        output='screen',
+    )
+    # nav2_map_server es un lifecycle node -> hay que activarlo. El
+    # lifecycle_manager con autostart=True lo configura y lo activa solo.
+    map_lifecycle = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_map',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': True,
+            'node_names': ['map_server'],
         }],
         output='screen',
     )
@@ -157,7 +189,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg, enable_nav_arg,
+        params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg, map_arg, enable_nav_arg,
+        map_server,
+        map_lifecycle,
         robot_state_pub,
         joint_state_pub,
         ekf,

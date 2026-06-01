@@ -34,21 +34,24 @@ ekf_localisation:
     base_frame: base_footprint
     world_frame: map
 
-    # Pose inicial del robot en el frame 'map'.
-    # Punto verde del mapa fisico: cerca del centro-abajo, mirando a la
-    # izquierda del mapa (= -X = yaw pi). Mide con cinta si quieres mas
-    # precision; este punto es una estimacion del boceto.
-    initial_x:     1.3
-    initial_y:     0.5
-    initial_theta: 3.1416     # pi: mirando -X (izquierda del mapa)
+    # Pose inicial cuando colocas el robot fisicamente con su PARTE TRASERA
+    # en la esquina (0,0) inferior-izquierda del laberinto.
+    # Segun tu medicion, el CENTRO del robot queda en (0.325, -0.28) m.
+    # +X apunta "hacia adentro" del laberinto (vertical hacia arriba en el
+    # mapa), +Y a la izquierda del robot (=al norte del mapa).
+    # Si vas a poner el robot en otra parte, ajusta estos 3 numeros.
+    initial_x:     0.325
+    initial_y:    -0.28
+    initial_theta: 0.0
 
     # Ruido por rueda (calibrar). Empiezo conservador en real.
     kr: 0.03
     kl: 0.03
 
-    # Camara: offset respecto a base_footprint en el robot fisico.
-    # Mide con regla del centro del eje de ruedas al lente de la camara.
-    camera_x:    0.085     # ~8.5 cm forward (ajusta a tu robot)
+    # Camara: offset respecto al centro del robot (base_footprint).
+    # Tu medicion: camara en world=(41, -28), centro robot en world=(32.5, -28)
+    #   -> offset = (41 - 32.5, -28 - (-28)) = (8.5, 0) cm
+    camera_x:    0.085     # 8.5 cm forward del centro del robot
     camera_y:    0.0
     camera_yaw:  0.0
 
@@ -66,29 +69,37 @@ ekf_localisation:
     aruco_max_distance:  1.5       # descarta detecciones mas alla de 1.5 m
 
     # ---------- MAPA DE MARKERS FISICOS ----------
-    # Convencion (top-down view del mapa del usuario):
-    #   world +X = derecha de la imagen
-    #   world +Y = arriba de la imagen
-    #   origen (0,0) = esquina inferior-izquierda de la pista
-    #   pista total: 3 m x 3 m (especificacion oficial)
+    # Coordenadas medidas EXACTAS de la hoja de calculo del usuario (cm -> m),
+    # frame con origen en la esquina inferior-izquierda del laberinto,
+    # +X "hacia adentro" del laberinto (arriba en el mapa fisico),
+    # +Y a la izquierda del robot (norte en el mapa).
     #
-    # Los yaws son DEFINITIVOS (vienen de las flechas en el mapa).
-    # Las (x, y) son LECTURAS del boceto a escala 3 m x 3 m. MEDIR con cinta
-    # y ajustar si tu construccion fisica difiere.
+    # Yaws de las flechas del boceto:
+    #     →  (arrow right in image)  = -Y  =>  yaw = -pi/2
+    #     ↑  (arrow up)              = +X  =>  yaw =  0
+    #     ←  (arrow left)            = +Y  =>  yaw =  pi/2
+    #     ↓  (arrow down)            = -X  =>  yaw =  pi
     #
-    # Layout (flecha = direccion a la que mira la CARA del marker):
-    #   ID 75:  arriba-derecha,    ←  yaw= pi
-    #   ID 706: arriba-centro,     ↓  yaw=-pi/2
-    #   ID 70:  centro-izq,        ↓  yaw=-pi/2
-    #   ID 701: pared exterior izq,→  yaw= 0
-    #   ID 708: centro,            →  yaw= 0
-    #   ID 705: centro-abajo,      ←  yaw= pi
-    #   ID 703: centro-derecha,    ↑  yaw= pi/2
-    #   ID 702: abajo-derecha,     →  yaw= 0
-    marker_ids:   [70,      706,     75,      701,    703,    705,    708,    702]
-    marker_xs:    [0.50,    1.30,    2.44,    0.18,   2.24,   1.12,   1.56,   2.16]
-    marker_ys:    [1.77,    2.32,    2.60,    1.33,   1.33,   1.07,   1.33,   0.50]
-    marker_yaws:  [-1.5708, -1.5708, 3.1416,  0.0,    1.5708, 3.1416, 0.0,    0.0]
+    # ID  | (x, y) m         | flecha | yaw
+    #  70 | ( 1.85, -0.30)   |  ↓    |  pi      (180 deg)
+    # 705 | ( 0.89, -1.20)   |  ←    |  pi/2    ( 90 deg)
+    # 706 | ( 2.455,-1.255)  |  ↓    |  pi
+    # 708 | ( 1.185,-1.21)   |  →    | -pi/2    (-90 deg)
+    # 703 | ( 1.24, -2.07)   |  ↑    |  0
+    # 702 | ( 0.27, -1.83)   |  →    | -pi/2
+    #  75 | ( 2.75, -2.40)   |  ←    |  pi/2
+    # 701 | depende, ver abajo
+    #
+    # *** 701 puede estar en P1 o P2 - el profesor decide en el momento ***
+    # P1: 701 en (1.30, 0.00) yaw=-pi/2   (en la pared izquierda interior)
+    # P2: 701 en (2.82, 0.00) yaw=-pi/2   (en la pared superior, lado derecho)
+    #
+    # Edita la ULTIMA entrada de cada fila (marker_xs y marker_ys) segun
+    # corresponda. El yaw es el mismo para los dos casos.
+    marker_ids:   [70,    705,    706,    708,     703,   702,     75,     701    ]
+    marker_xs:    [1.85,  0.89,   2.455,  1.185,   1.24,  0.27,    2.75,   1.30   ]  # <- 701: 1.30 (P1) o 2.82 (P2)
+    marker_ys:    [-0.30, -1.20,  -1.255, -1.21,   -2.07, -1.83,   -2.40,  0.00   ]  # <- 701: 0.00 (igual P1 y P2)
+    marker_yaws:  [3.1416, 1.5708, 3.1416, -1.5708, 0.0,   -1.5708, 1.5708, -1.5708]
 
 # --- Multi-point nav -> /pre_cmd_vel ---
 # Tuneo para pasillos angostos (60 cm) en pista 3 m x 3 m: velocidades chicas
@@ -98,48 +109,56 @@ multi_point_nav:
     control_rate: 20.0
     goal_tolerance: 0.15
     k_linear:  0.40
-    k_angular: 1.2
-    max_linear: 0.10          # 10 cm/s (la mitad que en sim) por las paredes
-    max_angular: 0.7
-    align_threshold_deg: 20.0
+    k_angular: 0.8            # menos agresivo al rotar (antes 1.2)
+    max_linear: 0.10
+    max_angular: 0.5          # mas lento al rotar (antes 0.7)
+    align_threshold_deg: 35.0 # solo gira en sitio si error > 35 deg (antes 20)
+                              # asi avanza Y rota a la vez con errores chicos
 
 # --- Obstacle avoidance: /pre_cmd_vel -> /cmd_vel ---
-# Pasillos 60 cm y robot ~13 cm de ancho => apenas 23 cm de holgura por lado.
-# El cono frontal y la distancia de deteccion deben ser CHICOS para no
-# entrar en FOLLOW_WALL todo el tiempo (las paredes laterales siempre cerca).
+# Pasillos 60 cm. Tuneo conservador para minimizar entradas a FOLLOW_WALL
+# (que es el estado que hace que se vea "girando como loco" cuando rebota
+# entre obstaculo-pared-libre).
 obstacle_avoidance:
   ros__parameters:
     control_rate: 20.0
-    obstacle_distance: 0.22       # solo paredes a < 22 cm cuentan como obstaculo
-    forward_cone_deg: 20.0        # cono frontal angosto (no detecta paredes laterales)
-    wall_target_distance: 0.18    # seguir la pared a 18 cm
+    obstacle_distance: 0.15       # solo paredes a < 15 cm como obstaculo (antes 0.22)
+    forward_cone_deg: 16.0        # cono mas angosto (antes 20)
+    wall_target_distance: 0.18
     wall_sector_min_deg: 60.0
     wall_sector_max_deg: 120.0
     wall_k: 2.0
-    wall_linear: 0.06             # mas lento en wall-follow
-    max_angular: 0.7
-    clear_front_hysteresis: 1.3
+    wall_linear: 0.05
+    max_angular: 0.6              # mas lento al girar (antes 0.7)
+    clear_front_hysteresis: 1.5   # mas histeresis (antes 1.3)
     publish_zero_when_idle: true
 
-# --- Trayectoria cerrada (5 waypoints) saliendo desde el punto verde.
-# Robot arranca en (1.3, 0.5) mirando hacia -X (izquierda del mapa).
+# --- Trayectoria (los profesores la dan EN VIVO durante la evaluacion).
+# Robot arranca en (0, 0) = esquina inferior-izquierda mirando +X.
+# Los profesores dan 4-5 waypoints. Edita waypoints_x / waypoints_y aqui
+# justo antes de prender el robot.
 #
-# Ruta pensada para:
-#   - 5 waypoints (cumple "minimo 4")
-#   - Cada tramo en direccion DISTINTA (no rectas paralelas)
-#   - Pasa cerca de los 4 cuadrantes -> el EKF ve los 8 markers a lo largo del loop
-#   - Sale a la izquierda (primer movimiento alineado con la pose inicial),
-#     sube, da la vuelta por arriba, regresa por la derecha y cierra abajo
-#   - Termina cerca del punto verde para que sea un loop cerrado
+# manual_advance: TRUE para evaluacion -> robot se detiene en cada waypoint
+# y espera senal manual. Para avanzar al siguiente:
+#     ros2 topic pub --once /next_waypoint std_msgs/msg/Empty "{}"
 #
-# CONFIRMA en tu construccion fisica que cada waypoint cae en un pasillo
-# abierto. Si alguno toca pared, muevelo al pasillo mas cercano y actualiza
-# este yaml.
+# loop_trajectory: FALSE para evaluacion (los profes NO quieren loop, es un
+# recorrido one-shot que termina en el ultimo waypoint).
+#
+# Trayectoria PLANTILLA (5 waypoints que evitan paredes obvias del laberinto
+# del usuario): borrar y poner la que dicten los profes.
 point_generator:
   ros__parameters:
-    waypoints_x: [0.5,  0.5,  1.5,  2.4,  2.2]
-    waypoints_y: [0.7,  1.8,  2.5,  1.6,  0.5]
-    loop_trajectory: true
+    # interactive_mode: TRUE = el robot NO se mueve solo. Espera goals que
+    # vienen del boton "2D Goal Pose" de RViz. La lista de waypoints abajo
+    # se IGNORA. Ideal para el demo del 10/jun con profesores.
+    # FALSE = usa la lista del yaml (modo evaluacion alternativo).
+    interactive_mode: true
+    # Estos waypoints SOLO se usan si interactive_mode=false.
+    waypoints_x: [1.0,  2.5,  2.0,  1.0,  0.4]
+    waypoints_y: [-0.3, -0.8, -1.7, -1.5, -0.5]
+    loop_trajectory: false
+    manual_advance: false
     startup_delay: 3.0
     frame_id: odom
 
@@ -151,6 +170,13 @@ aruco_ros_bridge:
     # Solo deja pasar markers de nuestro mapa. Bloquea falsos positivos
     # (e.g., un 249 fantasma que aruco_ros a veces mete encima del 702).
     allowed_ids: [70, 706, 75, 701, 703, 705, 708, 702]
+    # CORRECCION DE ESCALA: tu calibracion de camara (ost.yaml @ 320x240)
+    # sobre-reporta tvec ~46% mas grande que la realidad. Despues de poner
+    # marker_size=0.094 en el Jetson, queda ~37% residual. Compensa aqui:
+    #     1.0  = sin correccion (calibracion perfecta)
+    #     0.73 = corrige el ~37% residual (recomendado para tu setup actual)
+    # Cuando recalibren la camara correctamente, pongan 1.0.
+    scale_correction: 0.73
 
 # --- Covarianza viz ---
 covariance_visualizer:

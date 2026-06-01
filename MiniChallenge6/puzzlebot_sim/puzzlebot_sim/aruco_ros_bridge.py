@@ -65,9 +65,15 @@ class ArucoRosBridge(Node):
             [-1],
             ParameterDescriptor(type=ParameterType.PARAMETER_INTEGER_ARRAY),
         )
+        # Corrector de escala para compensar calibracion de camara mala.
+        # Si aruco_ros reporta tvec.z = 38 cm cuando la distancia real son
+        # 26 cm, el ratio es 26/38 = 0.684. Pose corregida = pose * 0.684.
+        # En condiciones normales (calibracion buena) usar 1.0.
+        self.declare_parameter('scale_correction', 1.0)
 
         in_topic = str(self.get_parameter('input_topic').value)
         out_topic = str(self.get_parameter('output_topic').value)
+        self.scale = float(self.get_parameter('scale_correction').value)
         ids_param = list(self.get_parameter('allowed_ids').value)
         # [-1] => sentinel "no filtrar"
         if ids_param == [-1] or len(ids_param) == 0:
@@ -101,6 +107,12 @@ class ArucoRosBridge(Node):
             d = ArucoDetection()
             d.id = mid
             d.pose = m.pose.pose   # PoseWithCovariance -> Pose
+            # Aplica correccion de escala a la posicion (no a la orientacion).
+            # Compensa errores de calibracion de camara.
+            if self.scale != 1.0:
+                d.pose.position.x = float(d.pose.position.x * self.scale)
+                d.pose.position.y = float(d.pose.position.y * self.scale)
+                d.pose.position.z = float(d.pose.position.z * self.scale)
             out.detections.append(d)
         self.pub.publish(out)
 

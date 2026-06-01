@@ -1,12 +1,30 @@
 # Final Challenge — Manual de operación
 
-Manual paso a paso para correr el stack del Final Challenge en el Puzzlebot
-físico y demostrar los dos requisitos del PDF de MCR2:
+Manual paso a paso para la **Demostración del Prototipo** (100 pts, 10/6/2026)
+en el Puzzlebot físico. Cubre los 3 criterios del PDF de evaluación oficial:
 
-1. **Part 1** — EKF de localización basado en ArUco + odometría, con
-   elipsoides de covarianza visibles en RViz.
-2. **Part 2** — Navegación autónoma con trayectoria cerrada de ≥4 waypoints
-   y obstacle avoidance reactivo.
+| # | Criterio | Pts |
+|---|---|---|
+| 1 | **Localización con odometría** — `/odom` publicado, elipsoide creciendo con desplazamiento | 20 |
+| 2 | **Filtro de Kalman** — odometría + visión integrada, elipsoide se reduce al ver ArUco | 30 |
+| 3 | **Navegación autónoma** — robot llega a 4-5 waypoints (dictados por profesores) con error <20 cm | 50 |
+| | **Total** | **100** |
+
+**Penalización por colisión**: −5 pts por cada una; >3 colisiones = descalificación.
+
+**Tolerancia de precisión por waypoint**:
+
+| Error vs waypoint | Puntaje |
+|---|---|
+| <5 cm | 100% |
+| 5–10 cm | 90% |
+| 10–15 cm | 70% |
+| 15–20 cm | 50% |
+| >20 cm | 0% |
+
+**Dinámica**: profesores entregan **posición inicial + 4-5 waypoints**.
+Robot se detiene en cada uno y **espera señal del profesor** para continuar.
+La pausa se usa para medir el error.
 
 ---
 
@@ -23,6 +41,7 @@ físico y demostrar los dos requisitos del PDF de MCR2:
 - [8. Estructura del video](#8-estructura-del-video)
 - [9. Troubleshooting](#9-troubleshooting)
 - [10. Mapeo de requisitos del PDF al código](#10-mapeo-de-requisitos-del-pdf-al-código)
+- [11. Preguntas técnicas que pueden hacer los profesores](#11-preguntas-técnicas-que-pueden-hacer-los-profesores)
 
 ---
 
@@ -256,69 +275,206 @@ Debe pesar varios MB.
 
 ---
 
-## 5. Escena 2 — Navegación autónoma (Part 2)
+## 5. Día de evaluación — Navegación interactiva con RViz
 
-> **Lo que vas a demostrar**: trayectoria cerrada de 5 waypoints, navegada autónomamente, con corrección de pose en cada cruce de marker.
+> **Lo que vas a demostrar**: el profesor te dicta una pose inicial y waypoints. Tú **NO** editas yaml — clickeas con RViz directamente en el mapa. El robot navega con Bug 0 reactivo + EKF y muestras cómo la covarianza se reduce cuando ve ArUcos.
 
-### 5.1 Apaga el launch anterior y reposiciona
+### Flujo "click-y-anda" usando RViz
 
-```bash
-# Ctrl+C en Terminal PC #1
+| Acción | Herramienta de RViz | Topic publicado | Quién lo recibe |
+|---|---|---|---|
+| Marcar dónde está el robot al inicio | **2D Pose Estimate** | `/initialpose` | EKF (resetea su pose) |
+| Dar el siguiente goal | **2D Goal Pose** | `/goal_pose` | point_generator → multi_point_nav |
+
+Las herramientas están **en la barra superior de RViz** (los botones azules con flecha y cuadradito).
+
+### 5.1 Antes de empezar (una sola vez)
+
+Edita `real_robot_params.yaml` para asegurar el modo correcto:
+
+```yaml
+point_generator:
+  ros__parameters:
+    manual_advance: false      # NO necesario en modo interactivo
+    loop_trajectory: false     # NO loop
+    waypoints_x: [0.0]         # placeholder; los goals los das con RViz
+    waypoints_y: [0.0]
 ```
 
-Tras el teleop, el odom acumuló drift. **Apaga, posiciona físicamente el
-robot en el punto verde, y prende otra vez**.
+**No necesitas cambiarlo cada vez** — el modo interactivo ignora la lista. Lo que importa es que `manual_advance` esté en `false` para que los goals de RViz no se queden esperando una señal manual extra.
 
-### 5.2 Lanza el stack completo con navegación
+### 5.2 Flujo recomendado el día del demo (modo interactivo con RViz)
+
+**Terminal PC #1** — Lanza el stack completo:
+
+```bash
+source ~/mc6_real_env.sh
+ros2 launch puzzlebot_sim real_robot_launch.py
+```
+
+Espera el log:
+```
+[map_server-N] Configuring
+[map_server-N] Activating
+```
+
+→ RViz se abre con:
+- El **mapa del laberinto** dibujado en gris/negro/blanco (paredes negras, libre gris)
+- El robot model en el origen
+- LaserScan, EKF Odometry, Covariance Ellipse, ArUco Debug
+
+**Terminal PC #2** — bag para el video / evidencia:
+
+```bash
+ros2 bag record -o eval_$(date +%H%M%S) \
+    /odom /aruco_detections /marker_publisher/markers /marker_publisher/result \
+    /cmd_vel /pre_cmd_vel /scan /current_goal /planned_path \
+    /pose_covariance_marker /initialpose /goal_pose /tf /tf_static
+```
+
+**En RViz, durante la evaluación:**
+
+1. **Pose inicial** — click en **"2D Pose Estimate"** en la barra de herramientas de RViz, click sobre el mapa donde físicamente está el robot, arrastra para apuntar a +X y suelta.
+   - En la terminal del launch verás: `EKF reset por /initialpose: x=0.00 y=0.00 theta=0.0deg`
+
+2. **Primer goal** — click en **"2D Goal Pose"**, click sobre el mapa en el waypoint que dictó el profesor, arrastra y suelta.
+   - El log dice: `Nuevo goal recibido de RViz (2D Goal Pose): (X.XX, Y.YY)`
+   - El robot empieza a moverse
+   - En RViz ves la elipse encogerse cada vez que cruza un ArUco
+
+3. **Robot llega** — `multi_point_nav` publica `/goal_reached`. El robot se detiene.
+
+4. **Profesor mide error con cinta** vs tu posición declarada en RViz.
+
+5. **Profesor dice "siguiente"** — click en "2D Goal Pose" otra vez con el siguiente punto.
+
+6. Repite hasta terminar todos los waypoints.
+
+7. Ctrl+C en el bag cuando termines.
+
+### Ventajas de este flujo vs el modo "lista del yaml"
+
+- No editas yaml en vivo (menos errores)
+- Los profesores pueden dictar puntos sobre la marcha; si cambian de idea, tú clickeas otra vez
+- Visual: ven el mapa, el robot, la elipse, el goal en una sola ventana
+- Mucho más rápido y menos estresante
+
+### 5.3 Antes de prender — modo lista alternativo (si prefieres editar yaml)
+
+Los profesores te dan en el momento:
+- Posición inicial (típicamente (0, 0) esquina inferior-izquierda)
+- 4-5 waypoints (x, y)
+
+Edita `~/ros2_ws/src/MiniChallenge6/MiniChallenge6/puzzlebot_sim/config/real_robot_params.yaml`:
+
+```yaml
+ekf_localisation:
+  ros__parameters:
+    # ...
+    initial_x:     0.0       # poner lo que dicen los profes
+    initial_y:     0.0
+    initial_theta: 0.0       # 0 = mirando +X
+
+point_generator:
+  ros__parameters:
+    waypoints_x: [X1, X2, X3, X4, X5]      # poner los X de los profes
+    waypoints_y: [Y1, Y2, Y3, Y4, Y5]      # poner los Y
+    loop_trajectory: false                  # NO loop para evaluacion
+    manual_advance: true                    # SI pausa por waypoint
+    startup_delay: 3.0
+    frame_id: odom
+```
+
+Guarda. **No necesitas rebuild** si usaste `--symlink-install` (sí lo usamos).
+
+### 5.2 Posiciona el robot físicamente en (0, 0) mirando +X
+
+La esquina inferior-izquierda del laberinto, alineado con +X (la dirección que va hacia adentro del laberinto). Mide con cinta para que esté en su pose inicial exacta.
+
+### 5.3 Lanza el stack completo
 
 **Terminal PC #1**:
 
 ```bash
 source ~/mc6_real_env.sh
 ros2 launch puzzlebot_sim real_robot_launch.py
-# (sin argumentos = enable_navigation:=true por default)
 ```
 
-Espera estos logs adicionales:
+Espera estos logs:
 
 ```
-[point_generator-N]    PointGenerator iniciado con 5 waypoints, loop=True.
+[point_generator-N]    PointGenerator iniciado con 5 waypoints, loop=False.
 [multi_point_nav-N]    MultiPointNav iniciado: tol=0.15 m, vmax=0.1, ...
 [obstacle_avoidance-N] ObstacleAvoidance iniciado: obs_dist=0.22 m, ...
 ```
 
-A los **3 segundos** (el `startup_delay`) el robot empieza a moverse al
-primer waypoint. RViz dibuja el camino planeado (pentágono verde).
-
-### 5.3 Bag de la navegación
+### 5.4 Bag de la evaluación
 
 **Terminal PC #2**:
 
 ```bash
 source ~/mc6_real_env.sh
-ros2 bag record -o partB_autonomous_$(date +%H%M%S) \
+ros2 bag record -o eval_$(date +%H%M%S) \
     /odom /aruco_detections /marker_publisher/markers /marker_publisher/result \
     /cmd_vel /pre_cmd_vel /scan /current_goal /planned_path \
-    /pose_covariance_marker /tf /tf_static
+    /pose_covariance_marker /next_waypoint /tf /tf_static
 ```
 
-### 5.4 Qué grabar / observar
+### 5.5 Flujo durante la evaluación
 
-- El robot navega los 5 waypoints en orden y cierra el loop.
-- En cada cruce con un marker, la elipsoide **encoge** → demuestra la integración EKF + nav.
-- Si choca pared, Bug 0 entra a wall-following y sale a GO_TO_GOAL cuando se libera el frente.
+```
+Robot arranca → va al WP1
+                  ↓
+            ¿Llegó (dist < 15 cm del goal)?
+                  ↓ sí
+            Robot SE DETIENE
+            Log: "WP0 alcanzado. Esperando senal manual del profesor."
+                  ↓
+            Profesor mide error con cinta
+            Profesor dice "siguiente"
+                  ↓
+**Terminal PC #3 (TÚ)**:
+            ros2 topic pub --once /next_waypoint std_msgs/msg/Empty "{}"
+                  ↓
+            Robot va al WP2
+                  ↓
+            ... (repite por cada waypoint) ...
+                  ↓
+            Después del último WP:
+            Log: "Trayectoria completada."
+            Robot queda parado.
+```
 
-### 5.5 Si se atora
+### 5.6 Comando para avanzar al siguiente waypoint
 
-- Reposiciona el robot manualmente y deja que retome el waypoint.
-- Si se atora en el mismo punto siempre, ese waypoint cae dentro de una pared. Apaga, edita `waypoints_*` en `real_robot_params.yaml`, rebuild, vuelve a probar.
-
-### 5.6 Termina la grabación
+Cada vez que el profesor te diga "siguiente":
 
 ```bash
-# Ctrl+C en bag
-# Ctrl+C en launch
-ls -lh partB_autonomous_*
+# En la Terminal PC #3 (mantenla abierta):
+source ~/mc6_real_env.sh
+ros2 topic pub --once /next_waypoint std_msgs/msg/Empty "{}"
+```
+
+Para ahorrar tecla, pon esto en un alias antes de empezar:
+
+```bash
+alias next='ros2 topic pub --once /next_waypoint std_msgs/msg/Empty "{}"'
+# Luego solo escribes "next" cada vez que tengas que avanzar
+```
+
+### 5.7 Si se atora antes de llegar a un waypoint
+
+- El obstacle_avoidance debe sacarlo solo (Bug 0 reactivo)
+- Si lleva >30 s atorado: cuenta como **colisión** (si no lo movieron tú)
+- Máximo 3 colisiones, -5 pts cada una
+- A las 4 colisiones: descalificación
+
+### 5.8 Termina la grabación
+
+```bash
+# Ctrl+C en bag (Terminal PC #2)
+# Ctrl+C en launch (Terminal PC #1)
+ls -lh eval_*
 ```
 
 ---
@@ -449,6 +605,85 @@ herramienta como **OBS Studio** o **SimpleScreenRecorder** captura todo.
 
 ---
 
+## 11. Preguntas técnicas que pueden hacer los profesores
+
+El PDF dice: *"Durante la demostración, los profesores podrán realizar
+preguntas técnicas individuales relacionadas con: Arquitectura del sistema
+en ROS 2, Implementación del algoritmo de navegación, Uso de sensores,
+Localización y Filtro de Kalman, Comunicación entre nodos, Visualización en
+RViz, Estrategias de control y evasión de obstáculos."*
+
+Respuestas mínimas que TODO el equipo debe poder dar:
+
+### Arquitectura del sistema en ROS 2
+
+> "Tenemos dos máquinas: el Jetson del Puzzlebot corre `aruco_jetson.launch`
+> (cámara CSI + detector aruco_ros) y `micro_ros_agent` (bridge al firmware
+> de la Hackerboard). La PC corre `real_robot_launch.py` que levanta el
+> EKF, multi_point_nav, obstacle_avoidance y RViz. La comunicación es por
+> DDS sobre WiFi: solo viajan `Pose` messages (no imágenes), por eso no se
+> satura."
+
+### Implementación del algoritmo de navegación (Bug 0)
+
+> "Usamos Bug 0 reactivo separado en dos capas: `multi_point_nav` calcula
+> el comando `/pre_cmd_vel` para ir directo al waypoint (controlador P
+> sobre distancia y ángulo). `obstacle_avoidance` lee `/pre_cmd_vel` y
+> `/scan`. Si el cono frontal (±10°) está libre, pasa el comando tal cual a
+> `/cmd_vel`. Si detecta un obstáculo a <22 cm, entra a modo FOLLOW_WALL:
+> sigue la pared izquierda a 18 cm con un P. Cuando el frente vuelve a
+> estar libre y la pared izquierda se 'pierde', regresa a GO_TO_GOAL."
+
+### Uso de sensores
+
+> "Encoders en cada rueda publican `/VelocityEncL,R` a 50 Hz (Float32).
+> LiDAR RPLidar publica `/scan` a 10 Hz (sensor_msgs/LaserScan). Cámara CSI
+> a 30 Hz publicada en el Jetson como `/video_source/raw` (no la usamos en
+> la PC, queda local). La detección ArUco corre en el Jetson, viaja
+> `/marker_publisher/markers` (aruco_msgs/MarkerArray)."
+
+### Localización y Filtro de Kalman
+
+> "Estado: 2D pose `(x, y, θ)` con covarianza 3×3. **Predict** desde
+> encoders: integra la cinemática diferencial (`v = r(wr+wl)/2`,
+> `ω = r(wr-wl)/L`) y propaga `Σ = F Σ F^T + Q`, donde Q viene del ruido
+> por rueda mapeado al estado por el Jacobiano `grad_w`. **Correct** por
+> cada ArUco visto cuyo ID está en nuestro mapa: convierte la pose
+> (`base_link` frame, ya transformada por aruco_ros en el Jetson) a una
+> medición 2D, calcula la innovación `y = z - h(x)` y la ganancia
+> `K = P H^T (H P H^T + R)^-1`. Actualiza estado `x += K y` y
+> `P = (I - K H) P`."
+
+### Comunicación entre nodos
+
+> "Todo es DDS (Fast RTPS por default). Topics principales:
+> - `/cmd_vel` (PC → Jetson → firmware)
+> - `/odom` (EKF en PC, publica con `pose.covariance` no-cero)
+> - `/aruco_detections` (bridge convierte de aruco_msgs a nuestro tipo)
+> - `/pose_covariance_marker` (visualizador → RViz)
+> - `/next_waypoint` (señal manual durante evaluación)"
+> Subscribers QoS: RELIABLE + KEEP_LAST(10) para mensajes de control.
+
+### Visualización en RViz
+
+> "RobotModel del URDF, TF (chain `map → odom → base_footprint`),
+> LaserScan, Odometry con covariance habilitada, MarkerArray para el
+> cilindro 2σ (eigendescomposición del bloque 2×2 de Σ), Path del
+> planned_path, Image del topic `/marker_publisher/result` (cámara con
+> markers resaltados)."
+
+### Estrategias de control y evasión de obstáculos
+
+> "Controlador P por separado para linear y angular en `multi_point_nav`:
+> si `|ang| > 20°` gira en sitio (v=0); si no, `v = k_lin * dist` y
+> `w = k_ang * ang`, ambos saturados. Para evitar obstáculos, el cono
+> frontal se mide del LiDAR (sector `±10°` del frame del LiDAR). El
+> wall-follow usa P sobre el error `(left_dist - target)`, con histéresis
+> al salir (front_clear * 1.3 + wall_lost) para evitar oscilación entre
+> los dos estados."
+
+---
+
 ## Apéndice — Comandos cheat sheet
 
 ```bash
@@ -468,6 +703,11 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 # Stack completo con nav autonoma (Escena 2, demo Part 2)
 ros2 launch puzzlebot_sim real_robot_launch.py
+
+# === EVALUACION FINAL: avanzar al siguiente waypoint cuando el profe diga ===
+ros2 topic pub --once /next_waypoint std_msgs/msg/Empty "{}"
+# o con alias:
+alias next='ros2 topic pub --once /next_waypoint std_msgs/msg/Empty "{}"'
 
 # === GRABACION ===
 ros2 bag record -o NOMBRE \
