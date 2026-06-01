@@ -26,6 +26,7 @@ import sys
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 
 from puzzlebot_msgs.msg import ArucoDetection, ArucoDetectionArray
 
@@ -53,9 +54,26 @@ class ArucoRosBridge(Node):
 
         self.declare_parameter('input_topic', '/marker_publisher/markers')
         self.declare_parameter('output_topic', '/aruco_detections')
+        # Filtro opcional: solo deja pasar markers cuyo id este en esta lista.
+        # Si la lista contiene solo [-1] (default), NO filtra (deja pasar todo).
+        # Util para eliminar falsos positivos de aruco_ros (e.g., un 249 que
+        # aparece encima de un 702 real por desenfoque).
+        # Tipo declarado explicitamente como INTEGER_ARRAY (sin esto, rclpy
+        # asume BYTE_ARRAY para [] vacio y crashea al leer el yaml).
+        self.declare_parameter(
+            'allowed_ids',
+            [-1],
+            ParameterDescriptor(type=ParameterType.PARAMETER_INTEGER_ARRAY),
+        )
 
         in_topic = str(self.get_parameter('input_topic').value)
         out_topic = str(self.get_parameter('output_topic').value)
+        ids_param = list(self.get_parameter('allowed_ids').value)
+        # [-1] => sentinel "no filtrar"
+        if ids_param == [-1] or len(ids_param) == 0:
+            self.allowed_ids = None
+        else:
+            self.allowed_ids = set(int(v) for v in ids_param)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -67,17 +85,21 @@ class ArucoRosBridge(Node):
             ArucoRosMarkerArray, in_topic, self.cb, qos,
         )
 
+        filter_info = ('sin filtro' if not self.allowed_ids
+                       else f'filtrando a ids {sorted(self.allowed_ids)}')
         self.get_logger().info(
-            f'aruco_ros_bridge: {in_topic} -> {out_topic} '
-            f'(aruco_msgs/MarkerArray -> puzzlebot_msgs/ArucoDetectionArray)'
+            f'aruco_ros_bridge: {in_topic} -> {out_topic} ({filter_info})'
         )
 
     def cb(self, msg):
         out = ArucoDetectionArray()
         out.header = msg.header  # mismo frame_id (segun como configures aruco_ros)
         for m in msg.markers:
+            mid = int(m.id)
+            if self.allowed_ids and mid not in self.allowed_ids:
+                continue
             d = ArucoDetection()
-            d.id = int(m.id)
+            d.id = mid
             d.pose = m.pose.pose   # PoseWithCovariance -> Pose
             out.detections.append(d)
         self.pub.publish(out)

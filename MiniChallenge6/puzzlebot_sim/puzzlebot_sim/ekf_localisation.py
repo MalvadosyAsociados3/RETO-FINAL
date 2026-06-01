@@ -161,15 +161,25 @@ class EkfLocalisation(Node):
         self.Sigma = np.zeros((3, 3))
 
         # --- QoS ---
+        # 'qos' RELIABLE para topicos ROS2 normales (ArUco bridge, /odom).
+        # 'sensor_qos' BEST_EFFORT para los encoders del Puzzlebot real:
+        # micro_ros_agent publica los encoders con BEST_EFFORT (estandar
+        # micro-ROS para sensor data), un subscriber RELIABLE NO los recibe
+        # ("New publisher discovered ... incompatible QoS").
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
 
         # --- Subs ---
-        self.wr_sub = self.create_subscription(Float32, 'wr', self.wr_cb, qos)
-        self.wl_sub = self.create_subscription(Float32, 'wl', self.wl_cb, qos)
+        self.wr_sub = self.create_subscription(Float32, 'wr', self.wr_cb, sensor_qos)
+        self.wl_sub = self.create_subscription(Float32, 'wl', self.wl_cb, sensor_qos)
         self.aruco_sub = self.create_subscription(
             ArucoDetectionArray, 'aruco_detections', self.aruco_cb, qos,
         )

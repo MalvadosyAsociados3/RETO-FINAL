@@ -71,25 +71,6 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /planned_path
       Value: true
-    - Alpha: 0.5
-      Axes Length: 0.3
-      Axes Radius: 0.03
-      Class: rviz_default_plugins/PoseWithCovariance
-      Color: 0; 200; 255
-      Enabled: false
-      Head Length: 0.2
-      Head Radius: 0.05
-      Name: EKF Pose (Odom)
-      Shaft Length: 0.2
-      Shaft Radius: 0.02
-      Shape: Arrow
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /odom
-      Value: true
     - Alpha: 1
       Class: rviz_default_plugins/Odometry
       Covariance:
@@ -178,7 +159,21 @@ Visualization Manager:
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: ArUco Debug
+      Name: ArUco Debug (real)
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /marker_publisher/result
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: ArUco Debug (sim)
       Normalize Range: true
       Topic:
         Depth: 5

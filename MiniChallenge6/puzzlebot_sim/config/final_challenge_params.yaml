@@ -42,7 +42,7 @@ ekf_localisation:
 # --- ArUco detector (sim) ---
 aruco_detector:
   ros__parameters:
-    marker_size: 0.18        # lado del marker en metros (aruco_marker_X mide 0.18)
+    marker_size: 0.10        # 10 cm (tamano fisico actual del marker)
     dictionary_name: ''      # '' = auto-detectar
     publish_debug_image: true
     image_topic: 'camera'
