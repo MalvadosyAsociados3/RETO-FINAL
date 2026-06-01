@@ -50,7 +50,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, PoseWithCovarianceStamped
 from std_msgs.msg import Float32
 from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 
@@ -183,6 +183,11 @@ class EkfLocalisation(Node):
         self.aruco_sub = self.create_subscription(
             ArucoDetectionArray, 'aruco_detections', self.aruco_cb, qos,
         )
+        # /initialpose viene del boton "2D Pose Estimate" de RViz: permite
+        # resetear la pose del EKF en vivo sin reiniciar el nodo.
+        self.initpose_sub = self.create_subscription(
+            PoseWithCovarianceStamped, '/initialpose', self.initpose_cb, qos,
+        )
 
         # --- Pubs ---
         self.odom_pub = self.create_publisher(Odometry, 'odom', qos)
@@ -275,6 +280,33 @@ class EkfLocalisation(Node):
             if det.id not in self.marker_map:
                 continue
             self.correct_with_marker(det)
+
+    def initpose_cb(self, msg: PoseWithCovarianceStamped):
+        """Resetea el estado del EKF con la pose del boton '2D Pose Estimate'
+        de RViz. Util para arrancar el demo poniendo el robot fisicamente y
+        luego marcando su posicion exacta en RViz con un click."""
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # quaternion -> yaw (asumimos rotacion solo en Z)
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.x = float(p.x)
+        self.y = float(p.y)
+        self.theta = normalize_angle(yaw)
+        # Toma la covarianza del mensaje si no es cero, sino reset a 0.
+        cov = np.array(msg.pose.covariance, dtype=np.float64).reshape(6, 6)
+        if float(np.abs(cov).sum()) > 1e-9:
+            self.Sigma = np.array([
+                [cov[0, 0], cov[0, 1], cov[0, 5]],
+                [cov[1, 0], cov[1, 1], cov[1, 5]],
+                [cov[5, 0], cov[5, 1], cov[5, 5]],
+            ])
+        else:
+            self.Sigma = np.zeros((3, 3))
+        self.get_logger().info(
+            f'EKF reset por /initialpose: '
+            f'x={self.x:.2f} y={self.y:.2f} theta={math.degrees(self.theta):.1f}deg'
+        )
 
     # ---------------------------------------------------- EKF predict --
 
