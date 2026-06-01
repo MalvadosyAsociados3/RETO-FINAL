@@ -1,11 +1,27 @@
 # Parametros para el Puzzlebot REAL en el Final Challenge.
-# Difiere de final_challenge_params.yaml en:
-#   - El EKF espera la observacion ya en frame 'base' (aruco_ros en el Jetson
-#     hace la TF con reference_frame=base).
-#   - marker_size = 0.165 m segun el OneNote (en sim usamos 0.18, pero en
-#     real el marker fisico mide 16.5 cm).
-#   - waypoints, mapa de markers y camera offset deben ajustarse al setup
-#     fisico real. Los valores aqui son una plantilla.
+#
+# Layout: 8 markers ArUco distribuidos en una pista tipo laberinto.
+# IDs (del boceto del usuario): 70, 706, 75, 701, 703, 705, 708, 702.
+# Diccionario por defecto de chev.me/arucogen: DICT_ARUCO_ORIGINAL (1024 markers).
+#
+# Sistema de coordenadas:
+#   - Origen (0,0) = posicion del Puzzlebot al arrancar.
+#   - +X = forward inicial del robot (la direccion a la que apunta al arrancar).
+#   - +Y = izquierda inicial del robot (REP-103).
+#   - theta=0 = apuntando a +X.
+#
+# Las posiciones de los markers AQUI ABAJO SON UNA PLANTILLA basada en el
+# boceto. Hay que MEDIR con cinta metrica la distancia de cada marker al
+# origen (X, Y en metros) y su orientacion (yaw: angulo entre la normal del
+# marker y el eje +X global).
+#
+# Truco para el yaw del marker:
+#   yaw = 0       -> el marker mira a +X (su normal apunta a +X global)
+#   yaw = pi/2    -> el marker mira a +Y (normal hacia la izquierda global)
+#   yaw = pi      -> mira a -X (su cara visible es la "espalda" si caminas hacia +X)
+#   yaw = -pi/2   -> mira a -Y
+# Como regla rapida: pon el marker en su pared, calcula a que direccion apunta
+# su CARA con respecto al mundo.
 
 # --- EKF ---
 ekf_localisation:
@@ -17,62 +33,112 @@ ekf_localisation:
     odom_frame: odom
     base_frame: base_footprint
     world_frame: map
-    initial_x:     0.0
-    initial_y:     0.0
-    initial_theta: 0.0
-    # Ruido por rueda (a calibrar contra el encoder real)
+
+    # Pose inicial del robot en el frame 'map'.
+    # Punto verde del mapa fisico: cerca del centro-abajo, mirando a la
+    # izquierda del mapa (= -X = yaw pi). Mide con cinta si quieres mas
+    # precision; este punto es una estimacion del boceto.
+    initial_x:     1.3
+    initial_y:     0.5
+    initial_theta: 3.1416     # pi: mirando -X (izquierda del mapa)
+
+    # Ruido por rueda (calibrar). Empiezo conservador en real.
     kr: 0.03
     kl: 0.03
+
     # Camara: offset respecto a base_footprint en el robot fisico.
-    # Mide tu Puzzlebot y ajusta. La camara va al frente, al centro.
-    camera_x:    0.085
+    # Mide con regla del centro del eje de ruedas al lente de la camara.
+    camera_x:    0.085     # ~8.5 cm forward (ajusta a tu robot)
     camera_y:    0.0
     camera_yaw:  0.0
-    # Frame de la observacion: aruco_ros con reference_frame=base ya lo da
-    # en base, asi que NO hay que reconvertirlo.
-    observation_frame: 'base'
-    # Ruido de medicion ArUco (m^2)
-    aruco_var_base:      0.01
-    aruco_var_per_meter: 0.005
-    aruco_max_distance:  3.5
-    # Mapa de markers (PLANTILLA). Pon aqui los IDs y posiciones (x, y, yaw)
-    # de los markers que vayas a colocar en la pista real.
-    marker_ids:   [0,    1,    2,    3]
-    marker_xs:    [2.0,  2.0, -1.0, -1.0]
-    marker_ys:    [0.0,  2.0,  2.0,  0.0]
-    marker_yaws:  [3.1416, -1.5708, 0.0, 1.5708]
+
+    # Frame de la observacion. Con la config del Jetson (reference_frame=camera)
+    # aruco_ros NO hace TF y publica la pose en el frame optico de la camara
+    # (x=right, y=down, z=forward). Nuestro EKF la convierte a base 2D.
+    observation_frame: 'camera_optical'
+
+    # Ruido de medicion ArUco (m^2). aruco_var_base es el ruido a 0 m;
+    # aumenta linealmente con la distancia.
+    # Con markers de 10 cm a 320x240 px, la pose es ruidosa mas alla de ~1.2 m
+    # asi que recortamos el rango maximo y subimos un poco la varianza.
+    aruco_var_base:      0.010
+    aruco_var_per_meter: 0.015     # crece mas rapido (markers chicos)
+    aruco_max_distance:  1.5       # descarta detecciones mas alla de 1.5 m
+
+    # ---------- MAPA DE MARKERS FISICOS ----------
+    # Convencion (top-down view del mapa del usuario):
+    #   world +X = derecha de la imagen
+    #   world +Y = arriba de la imagen
+    #   origen (0,0) = esquina inferior-izquierda de la pista
+    #   pista total: 3 m x 3 m (especificacion oficial)
+    #
+    # Los yaws son DEFINITIVOS (vienen de las flechas en el mapa).
+    # Las (x, y) son LECTURAS del boceto a escala 3 m x 3 m. MEDIR con cinta
+    # y ajustar si tu construccion fisica difiere.
+    #
+    # Layout (flecha = direccion a la que mira la CARA del marker):
+    #   ID 75:  arriba-derecha,    ←  yaw= pi
+    #   ID 706: arriba-centro,     ↓  yaw=-pi/2
+    #   ID 70:  centro-izq,        ↓  yaw=-pi/2
+    #   ID 701: pared exterior izq,→  yaw= 0
+    #   ID 708: centro,            →  yaw= 0
+    #   ID 705: centro-abajo,      ←  yaw= pi
+    #   ID 703: centro-derecha,    ↑  yaw= pi/2
+    #   ID 702: abajo-derecha,     →  yaw= 0
+    marker_ids:   [70,      706,     75,      701,    703,    705,    708,    702]
+    marker_xs:    [0.50,    1.30,    2.44,    0.18,   2.24,   1.12,   1.56,   2.16]
+    marker_ys:    [1.77,    2.32,    2.60,    1.33,   1.33,   1.07,   1.33,   0.50]
+    marker_yaws:  [-1.5708, -1.5708, 3.1416,  0.0,    1.5708, 3.1416, 0.0,    0.0]
 
 # --- Multi-point nav -> /pre_cmd_vel ---
+# Tuneo para pasillos angostos (60 cm) en pista 3 m x 3 m: velocidades chicas
+# para que el robot tenga tiempo de reaccionar a paredes cercanas.
 multi_point_nav:
   ros__parameters:
     control_rate: 20.0
-    goal_tolerance: 0.20
+    goal_tolerance: 0.15
     k_linear:  0.40
     k_angular: 1.2
-    max_linear: 0.15      # mas conservador que sim (0.18)
-    max_angular: 0.9
-    align_threshold_deg: 25.0
+    max_linear: 0.10          # 10 cm/s (la mitad que en sim) por las paredes
+    max_angular: 0.7
+    align_threshold_deg: 20.0
 
 # --- Obstacle avoidance: /pre_cmd_vel -> /cmd_vel ---
+# Pasillos 60 cm y robot ~13 cm de ancho => apenas 23 cm de holgura por lado.
+# El cono frontal y la distancia de deteccion deben ser CHICOS para no
+# entrar en FOLLOW_WALL todo el tiempo (las paredes laterales siempre cerca).
 obstacle_avoidance:
   ros__parameters:
     control_rate: 20.0
-    obstacle_distance: 0.5
-    forward_cone_deg: 30.0
-    wall_target_distance: 0.35
+    obstacle_distance: 0.22       # solo paredes a < 22 cm cuentan como obstaculo
+    forward_cone_deg: 20.0        # cono frontal angosto (no detecta paredes laterales)
+    wall_target_distance: 0.18    # seguir la pared a 18 cm
     wall_sector_min_deg: 60.0
     wall_sector_max_deg: 120.0
-    wall_k: 2.5
-    wall_linear: 0.08      # mas lento que sim
-    max_angular: 0.9
+    wall_k: 2.0
+    wall_linear: 0.06             # mas lento en wall-follow
+    max_angular: 0.7
     clear_front_hysteresis: 1.3
     publish_zero_when_idle: true
 
-# --- Trayectoria (PLANTILLA: ajustar a la pista real) ---
+# --- Trayectoria cerrada (5 waypoints) saliendo desde el punto verde.
+# Robot arranca en (1.3, 0.5) mirando hacia -X (izquierda del mapa).
+#
+# Ruta pensada para:
+#   - 5 waypoints (cumple "minimo 4")
+#   - Cada tramo en direccion DISTINTA (no rectas paralelas)
+#   - Pasa cerca de los 4 cuadrantes -> el EKF ve los 8 markers a lo largo del loop
+#   - Sale a la izquierda (primer movimiento alineado con la pose inicial),
+#     sube, da la vuelta por arriba, regresa por la derecha y cierra abajo
+#   - Termina cerca del punto verde para que sea un loop cerrado
+#
+# CONFIRMA en tu construccion fisica que cada waypoint cae en un pasillo
+# abierto. Si alguno toca pared, muevelo al pasillo mas cercano y actualiza
+# este yaml.
 point_generator:
   ros__parameters:
-    waypoints_x: [ 1.0,  1.5,  0.5,  0.0]
-    waypoints_y: [ 0.5,  1.5,  1.5,  0.0]
+    waypoints_x: [0.5,  0.5,  1.5,  2.4,  2.2]
+    waypoints_y: [0.7,  1.8,  2.5,  1.6,  0.5]
     loop_trajectory: true
     startup_delay: 3.0
     frame_id: odom
@@ -82,6 +148,9 @@ aruco_ros_bridge:
   ros__parameters:
     input_topic:  '/marker_publisher/markers'
     output_topic: '/aruco_detections'
+    # Solo deja pasar markers de nuestro mapa. Bloquea falsos positivos
+    # (e.g., un 249 fantasma que aruco_ros a veces mete encima del 702).
+    allowed_ids: [70, 706, 75, 701, 703, 705, 708, 702]
 
 # --- Covarianza viz ---
 covariance_visualizer:

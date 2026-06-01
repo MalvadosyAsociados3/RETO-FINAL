@@ -33,7 +33,14 @@ from puzzlebot_msgs.msg import ArucoDetection, ArucoDetectionArray
 
 
 DICT_CANDIDATES = [
+    # chev.me/arucogen usa "Original ArUco" por defecto (1024 markers).
     ('DICT_ARUCO_ORIGINAL', cv2.aruco.DICT_ARUCO_ORIGINAL),
+    # Diccionarios de 1000 (cubren IDs como 708, 706, 75).
+    ('DICT_4X4_1000', cv2.aruco.DICT_4X4_1000),
+    ('DICT_5X5_1000', cv2.aruco.DICT_5X5_1000),
+    ('DICT_6X6_1000', cv2.aruco.DICT_6X6_1000),
+    ('DICT_7X7_1000', cv2.aruco.DICT_7X7_1000),
+    # Diccionarios mas chicos por si acaso.
     ('DICT_4X4_50', cv2.aruco.DICT_4X4_50),
     ('DICT_5X5_50', cv2.aruco.DICT_5X5_50),
     ('DICT_6X6_50', cv2.aruco.DICT_6X6_50),

@@ -21,7 +21,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -55,6 +55,11 @@ def generate_launch_description():
     rviz_arg = DeclareLaunchArgument(
         'rviz_config', default_value=default_rviz,
     )
+    enable_nav_arg = DeclareLaunchArgument(
+        'enable_navigation', default_value='true',
+        description='true = autonomous nav (point_gen+multi_point+obstacle_avoid). '
+                    'false = solo EKF + ArUco bridge (para demo de teleop / Escena A).',
+    )
 
     params = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -72,6 +77,19 @@ def generate_launch_description():
         output='screen',
     )
 
+    # joint_state_publisher: publica /joint_states con posiciones default
+    # (cero) si el firmware del Jetson no lo hace. Sin esto las TFs de las
+    # llantas no se resuelven y el RobotModel aparece "bugeado" en RViz
+    # (llanta separada del chasis, etc.). Si el firmware ya publica
+    # /joint_states, esto se ignora (gana el ultimo publisher).
+    joint_state_pub = Node(
+        package='joint_state_publisher',
+        executable='joint_state_publisher',
+        name='joint_state_publisher',
+        parameters=[{'use_sim_time': use_sim_time, 'rate': 30}],
+        output='screen',
+    )
+
     ekf = Node(
         package='puzzlebot_sim',
         executable='ekf_localisation',
@@ -84,12 +102,15 @@ def generate_launch_description():
         output='screen',
     )
 
+    nav_on = IfCondition(LaunchConfiguration('enable_navigation'))
+
     point_gen = Node(
         package='puzzlebot_sim',
         executable='point_generator',
         name='point_generator',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
+        condition=nav_on,
     )
 
     multi_nav = Node(
@@ -98,6 +119,7 @@ def generate_launch_description():
         name='multi_point_nav',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
+        condition=nav_on,
     )
 
     obs_avoid = Node(
@@ -106,6 +128,7 @@ def generate_launch_description():
         name='obstacle_avoidance',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
+        condition=nav_on,
     )
 
     aruco_bridge = Node(
@@ -134,8 +157,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg,
+        params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg, enable_nav_arg,
         robot_state_pub,
+        joint_state_pub,
         ekf,
         point_gen,
         multi_nav,
