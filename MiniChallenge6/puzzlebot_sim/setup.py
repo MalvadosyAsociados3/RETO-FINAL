@@ -15,8 +15,21 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
         (os.path.join('share', package_name, 'config'), glob(os.path.join('config', '*.[yma]*'))),
         (os.path.join('share', package_name, 'rviz'), glob(os.path.join('rviz', '*.rviz'))),
+        # Original flat meshes + URDF
         (os.path.join('share', package_name, 'meshes'), glob(os.path.join('meshes', '*.stl'))),
         (os.path.join('share', package_name, 'urdf'), glob(os.path.join('urdf', '*.urdf'))),
+        # Organized mesh subdirectories (for xacro URDF)
+        (os.path.join('share', package_name, 'meshes', 'bases'), glob(os.path.join('meshes', 'bases', '*.stl'))),
+        (os.path.join('share', package_name, 'meshes', 'wheels'), glob(os.path.join('meshes', 'wheels', '*.stl'))),
+        (os.path.join('share', package_name, 'meshes', 'sensors'), glob(os.path.join('meshes', 'sensors', '*.stl'))),
+        (os.path.join('share', package_name, 'meshes', 'misc'), glob(os.path.join('meshes', 'misc', '*.stl'))),
+        # Xacro URDF for Gazebo simulation
+        (os.path.join('share', package_name, 'urdf', 'mcr2_mechanical'), glob(os.path.join('urdf', 'mcr2_mechanical', '*.xacro'))),
+        (os.path.join('share', package_name, 'urdf', 'mcr2_robots'), glob(os.path.join('urdf', 'mcr2_robots', '*.xacro'))),
+        (os.path.join('share', package_name, 'urdf', 'mcr2_robots', 'jetson_lidar_ed'), glob(os.path.join('urdf', 'mcr2_robots', 'jetson_lidar_ed', '*.xacro'))),
+        (os.path.join('share', package_name, 'urdf', 'mcr2_misc'), glob(os.path.join('urdf', 'mcr2_misc', '*.xacro'))),
+        (os.path.join('share', package_name, 'urdf', 'mcr2_sensors'), glob(os.path.join('urdf', 'mcr2_sensors', '*.xacro'))),
+        (os.path.join('share', package_name, 'urdf', 'mcr2_control'), glob(os.path.join('urdf', 'mcr2_control', '*.xacro'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
