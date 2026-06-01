@@ -47,14 +47,13 @@ def generate_launch_description():
     pkg_sim = get_package_share_directory('puzzlebot_sim')
     pkg_gazebo = get_package_share_directory('puzzlebot_gazebo')
     pkg_gz_sim = get_package_share_directory('ros_gz_sim')
-    pkg_desc = get_package_share_directory('puzzlebot_description')
 
-    robot_name = 'puzzlebot_jetson_lidar_ed'
+    # Use local xacro (standard DiffDrive plugins, works on Fortress/Humble)
     robot_xacro = os.path.join(
-        pkg_desc, 'urdf', 'mcr2_robots', f'{robot_name}.xacro',
+        pkg_sim, 'urdf', 'mcr2_robots', 'puzzlebot_jetson_lidar_ed.xacro',
     )
     bridge_config = os.path.join(
-        pkg_gazebo, 'config', f'{robot_name}.yaml',
+        pkg_gazebo, 'config', 'puzzlebot_jetson_lidar_ed.yaml',
     )
     gazebo_models = os.path.join(pkg_gazebo, 'models')
     gazebo_plugins = os.path.join(pkg_gazebo, 'plugins')
