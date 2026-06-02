@@ -226,7 +226,7 @@ class Bug0(Node):
     def path_to_goal_clear(self) -> bool:
         """Cono en direccion al goal mas alla de clear_path_distance."""
         if self.scan_ranges is None or self.scan_angle_inc == 0.0:
-            return False
+            return True  # Sin scan, asumimos camino libre
         goal_dir = self.goal_direction_angle()
         half = self.clear_cone / 2.0
         return self._sector_min(goal_dir - half, goal_dir + half) > self.clear_dist
@@ -234,9 +234,10 @@ class Bug0(Node):
     # ----------------------------------------------------- Tick principal
 
     def tick(self):
-        if (not self.have_odom or self.goal_x is None or
-                self.scan_ranges is None):
+        if not self.have_odom or self.goal_x is None:
             return
+
+        have_scan = self.scan_ranges is not None
 
         dist = self.distance_to_goal()
 
@@ -255,8 +256,12 @@ class Bug0(Node):
 
         # --- Maquina de estados ---
         if self.state == self.STATE_GO_TO_GOAL:
-            front = self.front_min()
-            if front < self.obs_dist:
+            front = self.front_min() if have_scan else float('inf')
+            goal_ang = abs(self.goal_direction_angle())
+            # Solo entrar a FOLLOW_WALL si el obstaculo esta al frente Y
+            # el goal esta mas o menos al frente (< 90 deg). Si el goal
+            # esta detras, primero girar hacia el goal — no bloquearse.
+            if front < self.obs_dist and goal_ang < math.radians(90.0):
                 self.wall_follow_start_dist_to_goal = dist
                 self._set_state(self.STATE_FOLLOW_WALL)
                 self.get_logger().info(
@@ -363,16 +368,23 @@ class Bug0(Node):
 
 
 def main(args=None):
+    import time
     rclpy.init(args=args)
     node = Bug0()
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        # Asegura que el robot se detenga al salir
+        # Publica velocidad cero y hace spin para que DDS envie el mensaje
+        # antes de destruir el nodo. Sin spin_some los mensajes no se flushean.
+        stop = Twist()
         try:
-            node.cmd_pub.publish(Twist())
+            node.timer.cancel()  # Para el tick para que no interfiera
+            for _ in range(10):
+                node.cmd_pub.publish(stop)
+                rclpy.spin_once(node, timeout_sec=0.05)
         except Exception:
             pass
         node.destroy_node()
