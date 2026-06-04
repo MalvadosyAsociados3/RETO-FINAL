@@ -147,8 +147,8 @@ def generate_launch_description():
 
     bug0 = Node(
         package='puzzlebot_sim',
-        executable='bug0',
-        name='bug0',
+        executable='bug2',
+        name='bug2',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
         condition=nav_on,

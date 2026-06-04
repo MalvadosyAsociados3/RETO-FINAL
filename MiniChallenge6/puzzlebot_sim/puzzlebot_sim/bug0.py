@@ -32,7 +32,8 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
 from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, ColorRGBA
+from visualization_msgs.msg import Marker
 
 
 def quat_to_yaw(q):
@@ -119,6 +120,8 @@ class Bug0(Node):
         self.last_state = None
         self.goal_reached_published = False
         self.wall_follow_start_dist_to_goal = None
+        self._tick_count = 0
+        self._log_interval = int(rate * 2)  # log cada ~2 seg
 
         # --- QoS ---
         reliable_qos = QoSProfile(
@@ -144,6 +147,7 @@ class Bug0(Node):
         # --- Pubs ---
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.reached_pub = self.create_publisher(Empty, 'goal_reached', reliable_qos)
+        self.goal_marker_pub = self.create_publisher(Marker, 'goal_marker', 10)
 
         # --- Timer ---
         self.timer = self.create_timer(1.0 / rate, self.tick)
@@ -185,8 +189,33 @@ class Bug0(Node):
             self.state = self.STATE_GO_TO_GOAL
             self.goal_reached_published = False
             self.wall_follow_start_dist_to_goal = None
+            self._publish_goal_marker()
             self.get_logger().info(
                 f'Bug 0: nuevo goal ({new_x:.2f}, {new_y:.2f})')
+
+    def _publish_goal_marker(self):
+        if self.goal_x is None:
+            return
+        m = Marker()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'bug0_goal'
+        m.id = 0
+        m.type = Marker.CYLINDER
+        m.action = Marker.ADD
+        m.pose.position.x = float(self.goal_x)
+        m.pose.position.y = float(self.goal_y)
+        m.pose.position.z = 0.05
+        m.pose.orientation.w = 1.0
+        m.scale.x = 0.15
+        m.scale.y = 0.15
+        m.scale.z = 0.10
+        # Verde si en camino, azul si alcanzado
+        if self.goal_reached_published:
+            m.color = ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.8)
+        else:
+            m.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)
+        self.goal_marker_pub.publish(m)
 
     # ---------------------------------------------------- LiDAR utilities
 
@@ -238,8 +267,26 @@ class Bug0(Node):
             return
 
         have_scan = self.scan_ranges is not None
+        if not have_scan:
+            # No moverse sin LiDAR — evita chocar al arrancar.
+            self.cmd_pub.publish(Twist())
+            return
 
         dist = self.distance_to_goal()
+
+        # --- Log periodico + marker visual (cada ~2 seg) ---
+        self._tick_count += 1
+        if self._tick_count % self._log_interval == 0:
+            self._publish_goal_marker()
+            front = self.front_min() if have_scan else float('inf')
+            left = self.left_min() if have_scan else float('inf')
+            ang = self.goal_direction_angle()
+            self.get_logger().info(
+                f'[DIAG] st={self.STATE_NAMES[self.state]} '
+                f'pose=({self.x:.2f},{self.y:.2f},{math.degrees(self.theta):.0f}°) '
+                f'goal=({self.goal_x:.2f},{self.goal_y:.2f}) dist={dist:.2f}m '
+                f'ang={math.degrees(ang):.0f}° front={front:.2f} left={left:.2f}'
+            )
 
         # --- Llegada al goal ---
         if dist < self.goal_tol:
@@ -256,7 +303,7 @@ class Bug0(Node):
 
         # --- Maquina de estados ---
         if self.state == self.STATE_GO_TO_GOAL:
-            front = self.front_min() if have_scan else float('inf')
+            front = self.front_min()
             goal_ang = abs(self.goal_direction_angle())
             # Solo entrar a FOLLOW_WALL si el obstaculo esta al frente Y
             # el goal esta mas o menos al frente (< 90 deg). Si el goal
@@ -279,7 +326,7 @@ class Bug0(Node):
             #       — evita quedar girando en circulos en espacio abierto
             left = self.left_min()
             front_clear = self.front_min() > self.obs_dist
-            wall_lost = left > self.wall_target * 3.0 and front_clear
+            wall_lost = left > self.wall_target * 2.5 and front_clear
             progressed = (
                 self.wall_follow_start_dist_to_goal is not None
                 and dist < self.wall_follow_start_dist_to_goal - self.wall_progress
@@ -347,11 +394,12 @@ class Bug0(Node):
             self.cmd_pub.publish(msg)
             return
 
-        # No hay pared visible por la izquierda: avanza recto buscando salida
-        if left > self.wall_target * 3.0:
+        # No hay pared visible por la izquierda: girar a la izquierda para
+        # rodear la esquina y reencontrar la pared (clasico Bug0 corner turn).
+        if left > self.wall_target * 2.5:
             msg = Twist()
-            msg.linear.x = float(self.wall_v * 1.5)
-            msg.angular.z = 0.0
+            msg.linear.x = float(self.wall_v)
+            msg.angular.z = float(self.wmax * 0.5)   # gira izquierda
             self.cmd_pub.publish(msg)
             return
 
