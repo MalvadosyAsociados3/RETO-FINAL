@@ -158,6 +158,11 @@ class ObstacleAvoidance(Node):
                 self.cmd_pub.publish(Twist())
             return
 
+        # Sin goal activo, no moverse (evita wall-follow espurio al arrancar)
+        if not self.have_pre:
+            self.cmd_pub.publish(Twist())
+            return
+
         front = self.front_min()
         left = self.left_min()
 

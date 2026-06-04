@@ -52,7 +52,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, PoseWithCovarianceStamped
 from std_msgs.msg import Float32
-from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
+from tf2_ros import TransformBroadcaster
 
 from puzzlebot_msgs.msg import ArucoDetectionArray
 
@@ -107,6 +107,8 @@ class EkfLocalisation(Node):
         self.declare_parameter('aruco_var_base', 0.01)        # m^2 a 0 m
         self.declare_parameter('aruco_var_per_meter', 0.005)  # m^2 por metro adicional
         self.declare_parameter('aruco_max_distance', 4.0)     # m: descartar medidas mas lejos
+        self.declare_parameter('aruco_mahal_gate', 5.0)      # umbral Mahalanobis: rechazar outliers
+        self.declare_parameter('aruco_max_jump', 0.15)       # m: clamp maximo del salto por correccion
 
         # Cargar parametros
         self.r = float(self.get_parameter('wheel_radius').value)
@@ -133,6 +135,8 @@ class EkfLocalisation(Node):
         self.aruco_var_base = float(self.get_parameter('aruco_var_base').value)
         self.aruco_var_per_m = float(self.get_parameter('aruco_var_per_meter').value)
         self.aruco_max_dist = float(self.get_parameter('aruco_max_distance').value)
+        self.mahal_gate = float(self.get_parameter('aruco_mahal_gate').value)
+        self.max_jump = float(self.get_parameter('aruco_max_jump').value)
 
         # Mapa: dict {id: (mx, my, m_yaw)}
         ids = [int(v) for v in self.get_parameter('marker_ids').value]
@@ -151,14 +155,31 @@ class EkfLocalisation(Node):
             }
 
         # --- Estado ---
+        # Pose en MAP frame (estado del EKF, usado por correct_with_marker)
         self.x = float(self.get_parameter('initial_x').value)
         self.y = float(self.get_parameter('initial_y').value)
         self.theta = float(self.get_parameter('initial_theta').value)
+
+        # Pose en ODOM frame (solo encoders, suave, sin saltos)
+        self.x_odom = 0.0
+        self.y_odom = 0.0
+        self.theta_odom = 0.0
+
+        # Offset map->odom (se actualiza con correcciones ArUco)
+        self.map_odom_x = self.x
+        self.map_odom_y = self.y
+        self.map_odom_theta = self.theta
+
         self.wr = 0.0
         self.wl = 0.0
 
-        # Covarianza 3x3. Arrancamos sin incertidumbre (pose conocida).
-        self.Sigma = np.zeros((3, 3))
+        # Covarianza 3x3. Incertidumbre inicial realista: la pose de
+        # arranque se mide a mano con cinta, no es perfecta.
+        self.declare_parameter('initial_cov_xy', 0.05)    # m^2
+        self.declare_parameter('initial_cov_theta', 0.1)  # rad^2
+        cov_xy = float(self.get_parameter('initial_cov_xy').value)
+        cov_th = float(self.get_parameter('initial_cov_theta').value)
+        self.Sigma = np.diag([cov_xy, cov_xy, cov_th])
 
         # --- QoS ---
         # 'qos' RELIABLE para topicos ROS2 normales (ArUco bridge, /odom).
@@ -192,10 +213,6 @@ class EkfLocalisation(Node):
         # --- Pubs ---
         self.odom_pub = self.create_publisher(Odometry, 'odom', qos)
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.static_broadcaster = StaticTransformBroadcaster(self)
-
-        if self.publish_map_odom:
-            self.publish_static_map_odom()
 
         self.timer = self.create_timer(self.dt, self.step)
 
@@ -208,27 +225,46 @@ class EkfLocalisation(Node):
 
     # ------------------------------------------------------- TF / msgs --
 
-    def publish_static_map_odom(self):
-        tf = TransformStamped()
-        tf.header.stamp = self.get_clock().now().to_msg()
-        tf.header.frame_id = self.world_frame
-        tf.child_frame_id = self.odom_frame
-        tf.transform.translation.x = 0.0
-        tf.transform.translation.y = 0.0
-        tf.transform.translation.z = 0.0
-        tf.transform.rotation.x = 0.0
-        tf.transform.rotation.y = 0.0
-        tf.transform.rotation.z = 0.0
-        tf.transform.rotation.w = 1.0
-        self.static_broadcaster.sendTransform(tf)
-
     def publish_odom_and_tf(self):
         now = self.get_clock().now().to_msg()
-        qw, qx, qy, qz = yaw_to_quat(self.theta)
 
+        # --- TF odom -> base_footprint (solo encoders, suave) ---
+        qw_o, qx_o, qy_o, qz_o = yaw_to_quat(self.theta_odom)
+        tf_odom = TransformStamped()
+        tf_odom.header.stamp = now
+        tf_odom.header.frame_id = self.odom_frame
+        tf_odom.child_frame_id = self.base_frame
+        tf_odom.transform.translation.x = float(self.x_odom)
+        tf_odom.transform.translation.y = float(self.y_odom)
+        tf_odom.transform.translation.z = 0.0
+        tf_odom.transform.rotation.w = float(qw_o)
+        tf_odom.transform.rotation.x = float(qx_o)
+        tf_odom.transform.rotation.y = float(qy_o)
+        tf_odom.transform.rotation.z = float(qz_o)
+
+        # --- TF map -> odom (correccion ArUco, dinamico) ---
+        if self.publish_map_odom:
+            qw_m, qx_m, qy_m, qz_m = yaw_to_quat(self.map_odom_theta)
+            tf_map = TransformStamped()
+            tf_map.header.stamp = now
+            tf_map.header.frame_id = self.world_frame
+            tf_map.child_frame_id = self.odom_frame
+            tf_map.transform.translation.x = float(self.map_odom_x)
+            tf_map.transform.translation.y = float(self.map_odom_y)
+            tf_map.transform.translation.z = 0.0
+            tf_map.transform.rotation.w = float(qw_m)
+            tf_map.transform.rotation.x = float(qx_m)
+            tf_map.transform.rotation.y = float(qy_m)
+            tf_map.transform.rotation.z = float(qz_m)
+            self.tf_broadcaster.sendTransform([tf_odom, tf_map])
+        else:
+            self.tf_broadcaster.sendTransform(tf_odom)
+
+        # --- Odom msg: pose en MAP frame (para navigation) ---
+        qw, qx, qy, qz = yaw_to_quat(self.theta)
         odom = Odometry()
         odom.header.stamp = now
-        odom.header.frame_id = self.odom_frame
+        odom.header.frame_id = self.world_frame
         odom.child_frame_id = self.base_frame
         odom.pose.pose.position.x = float(self.x)
         odom.pose.pose.position.y = float(self.y)
@@ -251,20 +287,6 @@ class EkfLocalisation(Node):
         cov6[5, 5] = self.Sigma[2, 2]
         odom.pose.covariance = cov6.flatten().tolist()
         self.odom_pub.publish(odom)
-
-        # TF odom -> base_footprint
-        tf = TransformStamped()
-        tf.header.stamp = now
-        tf.header.frame_id = self.odom_frame
-        tf.child_frame_id = self.base_frame
-        tf.transform.translation.x = float(self.x)
-        tf.transform.translation.y = float(self.y)
-        tf.transform.translation.z = 0.0
-        tf.transform.rotation.w = float(qw)
-        tf.transform.rotation.x = float(qx)
-        tf.transform.rotation.y = float(qy)
-        tf.transform.rotation.z = float(qz)
-        self.tf_broadcaster.sendTransform(tf)
 
     # ------------------------------------------------------- Callbacks --
 
@@ -293,6 +315,8 @@ class EkfLocalisation(Node):
         self.x = float(p.x)
         self.y = float(p.y)
         self.theta = normalize_angle(yaw)
+        # Recalcular offset map->odom con la nueva pose
+        self._update_map_odom_offset()
         # Toma la covarianza del mensaje si no es cero, sino reset a 0.
         cov = np.array(msg.pose.covariance, dtype=np.float64).reshape(6, 6)
         if float(np.abs(cov).sum()) > 1e-9:
@@ -310,9 +334,35 @@ class EkfLocalisation(Node):
 
     # ---------------------------------------------------- EKF predict --
 
+    def _odom_to_map(self):
+        """Calcula la pose en MAP frame a partir de odom pose + offset map->odom."""
+        c_mo = math.cos(self.map_odom_theta)
+        s_mo = math.sin(self.map_odom_theta)
+        self.x = c_mo * self.x_odom - s_mo * self.y_odom + self.map_odom_x
+        self.y = s_mo * self.x_odom + c_mo * self.y_odom + self.map_odom_y
+        self.theta = normalize_angle(self.theta_odom + self.map_odom_theta)
+
+    def _update_map_odom_offset(self):
+        """Recalcula offset map->odom a partir de la pose actual en map y odom."""
+        self.map_odom_theta = normalize_angle(self.theta - self.theta_odom)
+        c_mo = math.cos(self.map_odom_theta)
+        s_mo = math.sin(self.map_odom_theta)
+        self.map_odom_x = self.x - (c_mo * self.x_odom - s_mo * self.y_odom)
+        self.map_odom_y = self.y - (s_mo * self.x_odom + c_mo * self.y_odom)
+
     def predict(self):
         v = self.r * (self.wr + self.wl) / 2.0
         w_ang = self.r * (self.wr - self.wl) / self.L
+
+        # Actualizar pose en ODOM frame (solo encoders, suave)
+        c_o = math.cos(self.theta_odom)
+        s_o = math.sin(self.theta_odom)
+        self.x_odom += v * c_o * self.dt
+        self.y_odom += v * s_o * self.dt
+        self.theta_odom = normalize_angle(self.theta_odom + w_ang * self.dt)
+
+        # Calcular pose en MAP frame
+        self._odom_to_map()
 
         c = math.cos(self.theta)
         s = math.sin(self.theta)
@@ -338,11 +388,6 @@ class EkfLocalisation(Node):
 
         # Sigma_k = F Sigma_{k-1} F^T + Q
         self.Sigma = F @ self.Sigma @ F.T + Q
-
-        # Pose por Euler
-        self.x += v * c * self.dt
-        self.y += v * s * self.dt
-        self.theta = normalize_angle(self.theta + w_ang * self.dt)
 
     # ---------------------------------------------------- EKF correct --
 
@@ -408,6 +453,7 @@ class EkfLocalisation(Node):
 
         # Innovacion
         innov = z_meas - h
+        innov_mag = math.hypot(float(innov[0]), float(innov[1]))
 
         # Ruido de la medicion (crece con la distancia).
         sigma2 = self.aruco_var_base + self.aruco_var_per_m * dist
@@ -422,17 +468,56 @@ class EkfLocalisation(Node):
             S_inv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
             return
+
+        # Gate de Mahalanobis: rechazar outliers
+        mahal2 = float(innov @ S_inv @ innov)
+        mahal = math.sqrt(mahal2)
+        if mahal > self.mahal_gate:
+            self.get_logger().warn(
+                f'[ARUCO] id={mid} RECHAZADO: Mahalanobis={mahal:.2f} > gate={self.mahal_gate:.1f}, '
+                f'innov=({innov[0]:.3f},{innov[1]:.3f}) |innov|={innov_mag:.3f}'
+            )
+            return
+
         K = self.Sigma @ H.T @ S_inv
 
         # Actualizar estado
         delta = K @ innov
+
+        # Clamp: limitar salto maximo en posicion para evitar teleports
+        raw_jump = math.hypot(float(delta[0]), float(delta[1]))
+        if raw_jump > self.max_jump:
+            scale = self.max_jump / raw_jump
+            delta[0] *= scale
+            delta[1] *= scale
+            delta[2] *= scale
+            self.get_logger().warn(
+                f'[ARUCO] id={mid} jump CLAMPED: {raw_jump:.3f}m -> {self.max_jump:.3f}m'
+            )
+
+        old_x, old_y, old_th = self.x, self.y, self.theta
         self.x += float(delta[0])
         self.y += float(delta[1])
         self.theta = normalize_angle(self.theta + float(delta[2]))
 
+        # Recalcular offset map->odom (la correccion mueve map->odom, no odom->base)
+        self._update_map_odom_offset()
+
         # Actualizar covarianza
         I3 = np.eye(3)
         self.Sigma = (I3 - K @ H) @ self.Sigma
+
+        # Diagnostico: log cada correccion ArUco
+        jump = math.hypot(float(delta[0]), float(delta[1]))
+        self.get_logger().info(
+            f'[ARUCO] id={mid} dist={dist:.2f}m '
+            f'meas=({z_meas[0]:.3f},{z_meas[1]:.3f}) '
+            f'pred=({h[0]:.3f},{h[1]:.3f}) '
+            f'innov=({innov[0]:.3f},{innov[1]:.3f}) |innov|={innov_mag:.3f} mahal={mahal:.2f} '
+            f'jump=({delta[0]:.3f},{delta[1]:.3f},{math.degrees(delta[2]):.1f}°) |jump|={jump:.3f}m '
+            f'pose: ({old_x:.2f},{old_y:.2f})->({self.x:.2f},{self.y:.2f}) '
+            f'θ: {math.degrees(old_th):.1f}°->{math.degrees(self.theta):.1f}°'
+        )
 
     # ------------------------------------------------------------ Loop --
 

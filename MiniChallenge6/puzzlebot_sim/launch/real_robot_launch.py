@@ -145,19 +145,10 @@ def generate_launch_description():
         condition=nav_on,
     )
 
-    multi_nav = Node(
+    bug0 = Node(
         package='puzzlebot_sim',
-        executable='multi_point_nav',
-        name='multi_point_nav',
-        parameters=[params, {'use_sim_time': use_sim_time}],
-        output='screen',
-        condition=nav_on,
-    )
-
-    obs_avoid = Node(
-        package='puzzlebot_sim',
-        executable='obstacle_avoidance',
-        name='obstacle_avoidance',
+        executable='bug2',
+        name='bug2',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
         condition=nav_on,
@@ -179,6 +170,14 @@ def generate_launch_description():
         output='screen',
     )
 
+    # TF estatico: el URDF define 'laser_frame' pero rplidar publica en 'laser'
+    laser_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='laser_frame_to_laser',
+        arguments=['0', '0', '0', '0', '0', '0', 'laser_frame', 'laser'],
+    )
+
     rviz = Node(
         package='rviz2',
         executable='rviz2',
@@ -194,10 +193,10 @@ def generate_launch_description():
         map_lifecycle,
         robot_state_pub,
         joint_state_pub,
+        laser_tf,
         ekf,
         point_gen,
-        multi_nav,
-        obs_avoid,
+        bug0,
         aruco_bridge,
         cov_viz,
         rviz,
