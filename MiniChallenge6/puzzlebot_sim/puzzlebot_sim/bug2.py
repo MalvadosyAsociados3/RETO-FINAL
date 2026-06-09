@@ -41,6 +41,8 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty, ColorRGBA
 from visualization_msgs.msg import Marker
 
+from puzzlebot_sim import scan_utils
+
 
 def quat_to_yaw(q):
     return math.atan2(
@@ -92,6 +94,12 @@ class Bug2(Node):
         self.declare_parameter('stuck_distance', 0.05)
         self.declare_parameter('wall_k', 2.0)
         self.declare_parameter('wall_linear', 0.05)
+        # --- NIVEL 1: capa de seguridad reactiva (solo /scan) + modo ---
+        self.declare_parameter('safety_stop_distance', 0.18)
+        self.declare_parameter('safety_cone_deg', 60.0)
+        self.declare_parameter('critical_distance', 0.12)
+        self.declare_parameter('lidar_yaw_offset', 0.0)
+        self.declare_parameter('trust_odom', False)
 
         rate = float(self.get_parameter('control_rate').value)
         self.goal_tol = float(self.get_parameter('goal_tolerance').value)
@@ -116,6 +124,12 @@ class Bug2(Node):
         self.stuck_dist = float(self.get_parameter('stuck_distance').value)
         self.wall_k = float(self.get_parameter('wall_k').value)
         self.wall_v = float(self.get_parameter('wall_linear').value)
+        self.safety_stop = float(self.get_parameter('safety_stop_distance').value)
+        self.safety_half = math.radians(
+            float(self.get_parameter('safety_cone_deg').value)) / 2.0
+        self.critical = float(self.get_parameter('critical_distance').value)
+        self.lidar_yaw_offset = float(self.get_parameter('lidar_yaw_offset').value)
+        self.trust_odom = bool(self.get_parameter('trust_odom').value)
 
         # --- Estado del robot ---
         self.x = 0.0
@@ -125,8 +139,10 @@ class Bug2(Node):
 
         # Scan
         self.scan_ranges = None
+        self.scan_angles = None
         self.scan_angle_min = 0.0
         self.scan_angle_inc = 0.0
+        self.scan_range_min = 0.0
         self.scan_range_max = 10.0
 
         # Goal + linea M
@@ -203,12 +219,19 @@ class Bug2(Node):
         self.have_odom = True
 
     def scan_cb(self, msg: LaserScan):
-        ranges = np.asarray(msg.ranges, dtype=np.float32)
-        bad = ~np.isfinite(ranges)
-        ranges = np.where(bad, msg.range_max, ranges)
-        self.scan_ranges = ranges
-        self.scan_angle_min = float(msg.angle_min)
-        self.scan_angle_inc = float(msg.angle_increment)
+        n = len(msg.ranges)
+        # Limpia 0.0/inf/nan/<range_min -> range_max (no-retorno = libre).
+        self.scan_ranges = scan_utils.clean_ranges(
+            msg.ranges, msg.range_min, msg.range_max)
+        # Recalcula el angulo real de cada beam solo si cambia la geometria.
+        if (self.scan_angles is None or len(self.scan_angles) != n
+                or self.scan_angle_min != float(msg.angle_min)
+                or self.scan_angle_inc != float(msg.angle_increment)):
+            self.scan_angle_min = float(msg.angle_min)
+            self.scan_angle_inc = float(msg.angle_increment)
+            self.scan_angles = scan_utils.beam_angles(
+                self.scan_angle_min, self.scan_angle_inc, n, self.lidar_yaw_offset)
+        self.scan_range_min = float(msg.range_min)
         self.scan_range_max = float(msg.range_max)
 
     def goal_cb(self, msg: PoseStamped):
@@ -262,19 +285,11 @@ class Bug2(Node):
     # ---------------------------------------------------- LiDAR utilities
 
     def _sector_min(self, angle_lo: float, angle_hi: float) -> float:
-        if self.scan_ranges is None or self.scan_angle_inc == 0.0:
-            return float('inf')
-        n = len(self.scan_ranges)
-        idx_lo = int(round((angle_lo - self.scan_angle_min) / self.scan_angle_inc))
-        idx_hi = int(round((angle_hi - self.scan_angle_min) / self.scan_angle_inc))
-        idx_lo = max(0, min(n - 1, idx_lo))
-        idx_hi = max(0, min(n - 1, idx_hi))
-        if idx_lo > idx_hi:
-            idx_lo, idx_hi = idx_hi, idx_lo
-        sector = self.scan_ranges[idx_lo:idx_hi + 1]
-        if sector.size == 0:
-            return float('inf')
-        return float(np.min(sector))
+        # Robusto a la convencion del LIDAR: selecciona por el ANGULO real de
+        # cada beam (no por indices), maneja wrap y angle_increment de cualquier
+        # signo. Ver scan_utils.sector_min.
+        return scan_utils.sector_min(
+            self.scan_ranges, self.scan_angles, angle_lo, angle_hi)
 
     def front_min(self) -> float:
         half = self.front_cone / 2.0
@@ -315,14 +330,73 @@ class Bug2(Node):
             return 0.0
         return math.hypot(self.x - self.hit_x, self.y - self.hit_y)
 
+    # ------------------------------------------------- Capa de seguridad --
+
+    def _safety_override(self) -> bool:
+        """NIVEL 1 (solo /scan): freno/giro incondicional ante obstaculo frontal.
+
+        Si algo entra en el cono frontal (+-safety_cone/2) mas cerca que
+        safety_stop, prohibe avanzar y gira hacia el lado mas abierto; si esta
+        criticamente cerca, retrocede lento. NO usa /odom. Devuelve True si tomo
+        el control (ya publico cmd_vel) -> el caller debe hacer return.
+        """
+        nearest = self._sector_min(-self.safety_half, self.safety_half)
+        if nearest >= self.safety_stop:
+            return False
+        left = self.left_min()
+        right = self.right_min()
+        msg = Twist()
+        # Muy cerca: retroceder lento; si no, solo frenar el avance.
+        msg.linear.x = -float(self.wall_v * 0.5) if nearest < self.critical else 0.0
+        # Girar al lado con mas espacio (CCW=+ si la izquierda esta mas libre).
+        turn = self.wmax * 0.8
+        msg.angular.z = float(turn) if left >= right else -float(turn)
+        self.cmd_pub.publish(msg)
+        if self._tick_count % self._log_interval == 0:
+            self.get_logger().warn(
+                f'[SAFETY] frente a {nearest:.2f}m < {self.safety_stop:.2f} -> '
+                f'{"retro+giro" if nearest < self.critical else "freno+giro"} '
+                f'{"izq" if left >= right else "der"}'
+            )
+        return True
+
     # ----------------------------------------------------- Tick principal
 
     def tick(self):
-        if not self.have_odom or self.goal_x is None:
+        have_scan = self.scan_ranges is not None
+
+        # --- NIVEL 1: SEGURIDAD reactiva (solo /scan, maxima prioridad) ---
+        if have_scan and self._safety_override():
+            return
+        if not have_scan:
+            # Sin LiDAR no nos movemos (evita chocar al arrancar).
+            self.cmd_pub.publish(Twist())
             return
 
-        # No moverse sin LiDAR — evita chocar al arrancar.
-        if self.scan_ranges is None:
+        # --- NIVEL 2: modo reactivo puro (mano izquierda, NO usa /odom) ---
+        if not self.trust_odom:
+            self._tick_count += 1
+            if self._tick_count % self._log_interval == 0:
+                self.get_logger().info(
+                    f'[REACTIVO] front={self.front_min():.2f} '
+                    f'left={self.left_min():.2f} right={self.right_min():.2f} '
+                    f'fL={self.front_left_min():.2f} fR={self.front_right_min():.2f}'
+                )
+            # Llegada al goal (opcional, si hay odom+goal): detenerse.
+            if (self.have_odom and self.goal_x is not None
+                    and self.distance_to_goal() < self.goal_tol):
+                if not self.goal_reached_published:
+                    self.reached_pub.publish(Empty())
+                    self.goal_reached_published = True
+                    self.state = self.STATE_GOAL_REACHED
+                    self.get_logger().info('Bug (reactivo): GOAL alcanzado, detenido.')
+                self.cmd_pub.publish(Twist())
+                return
+            self._wall_follow_step()
+            return
+
+        # --- NIVEL 3: hibrido Bug0/Bug2 con odometria (trust_odom=true) ---
+        if not self.have_odom or self.goal_x is None:
             self.cmd_pub.publish(Twist())
             return
 
@@ -399,7 +473,6 @@ class Bug2(Node):
 
         # --- Maquina de estados ---
         if self.state == self.STATE_GO_TO_GOAL:
-            goal_ang = abs(self.goal_direction_angle())
             front_right = self.front_right_min()
             front_left = self.front_left_min()
             # HIT: obstaculo en frente, frente-derecho, o frente-izquierdo
@@ -410,7 +483,7 @@ class Bug2(Node):
             if self._leave_cooldown > 0:
                 self._leave_cooldown -= 1
 
-            if (obstacle_ahead or obstacle_fr or obstacle_fl) and goal_ang < math.radians(90.0) and self._leave_cooldown == 0:
+            if (obstacle_ahead or obstacle_fr or obstacle_fl) and self._leave_cooldown == 0:
                 self.hit_x = self.x
                 self.hit_y = self.y
                 self.hit_dist_to_goal = dist_goal
@@ -485,12 +558,14 @@ class Bug2(Node):
     def _go_to_goal_step(self):
         dist = self.distance_to_goal()
         ang = self.goal_direction_angle()
+        front = self.front_min()
 
         if abs(ang) > self.align_thr:
-            v = self.vmax * 0.25  # nunca pivotear puro: rueda > patina
+            # Desalineado: gira hacia la meta; avanza solo si el frente esta libre
+            v = self.vmax * 0.15 if front > self.obs_dist else 0.0
             w = self.kw * ang
         else:
-            v = min(self.kv * dist, self.vmax)
+            v = min(self.kv * dist, self.vmax) if front > self.obs_dist else 0.0
             w = self.kw * ang
 
         # Evasion suave: si hay pared cerca por el frente-derecho, sesgar izquierda

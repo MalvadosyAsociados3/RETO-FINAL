@@ -136,7 +136,7 @@ bug2:
   ros__parameters:
     control_rate: 20.0
     goal_tolerance: 0.15
-    obstacle_distance: 0.25         # original
+    obstacle_distance: 0.30         # subido de 0.25: reaccionar antes en pasillos
     forward_cone_deg: 40.0       # original
     wall_target_distance: 0.27      # +2cm del original (0.25): margen para la llanta
     wall_sector_min_deg: 60.0
@@ -157,6 +157,12 @@ bug2:
     align_threshold_deg: 35.0
     wall_k: 2.2                  # ligeramente subido de 2.0 para mantener los 2cm extra
     wall_linear: 0.04            # original
+    # --- NIVEL 1: capa de seguridad reactiva (solo /scan) + modo ---
+    safety_stop_distance: 0.18   # freno frontal INCONDICIONAL (no usa /odom)
+    safety_cone_deg: 60.0        # cono frontal +-30 deg para la seguridad
+    critical_distance: 0.12      # mas cerca que esto -> retroceso lento
+    lidar_yaw_offset: 0.0        # rad; ajustar SOLO si el 0 del lidar no mira al frente
+    trust_odom: false            # false = cruza el laberinto por mano izquierda (sin depender de odom)
 
 # --- Trayectoria (los profesores la dan EN VIVO durante la evaluacion).
 # Robot arranca en (0, 0) = esquina inferior-izquierda mirando +X.
