@@ -22,7 +22,8 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import Command, LaunchConfiguration
+from launch.substitutions import (Command, LaunchConfiguration,
+                                  PathJoinSubstitution, TextSubstitution)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -31,10 +32,11 @@ def generate_launch_description():
     pkg_sim = get_package_share_directory('puzzlebot_sim')
     pkg_desc = get_package_share_directory('puzzlebot_description')
 
-    robot_name = 'puzzlebot_jetson_lidar_ed'
-    robot_xacro = os.path.join(
-        pkg_desc, 'urdf', 'mcr2_robots', f'{robot_name}.xacro',
-    )
+    # xacro del robot, configurable via launch arg 'robot_name' (no hardcodeado)
+    robot_xacro = PathJoinSubstitution([
+        pkg_desc, 'urdf', 'mcr2_robots',
+        [LaunchConfiguration('robot_name'), TextSubstitution(text='.xacro')],
+    ])
     default_params = os.path.join(
         pkg_sim, 'config', 'real_robot_params.yaml',
     )
@@ -64,6 +66,32 @@ def generate_launch_description():
         'enable_navigation', default_value='true',
         description='true = autonomous nav (point_gen+multi_point+obstacle_avoid). '
                     'false = solo EKF + ArUco bridge (para demo de teleop / Escena A).',
+    )
+    # --- Topics de E/S hacia el robot real (CONFIGURABLES, no hardcodeados) ---
+    # Si el firmware/LiDAR de la Jetson usa otros nombres (o estan namespaceados),
+    # se cambian aqui SIN tocar codigo, p.ej.:
+    #   ros2 launch puzzlebot_sim real_robot_launch.py wr_topic:=/VelocityEncL \
+    #       wl_topic:=/VelocityEncR cmd_vel_topic:=/cmd_vel scan_topic:=/scan
+    # (cruzar wr/wl tambien sirve para corregir el giro invertido por encoders).
+    wr_topic_arg = DeclareLaunchArgument(
+        'wr_topic', default_value='/VelocityEncR',
+        description='Topic de velocidad de la rueda DERECHA (encoder).',
+    )
+    wl_topic_arg = DeclareLaunchArgument(
+        'wl_topic', default_value='/VelocityEncL',
+        description='Topic de velocidad de la rueda IZQUIERDA (encoder).',
+    )
+    cmd_vel_arg = DeclareLaunchArgument(
+        'cmd_vel_topic', default_value='/cmd_vel',
+        description='Topic de comando de velocidad hacia el firmware.',
+    )
+    scan_arg = DeclareLaunchArgument(
+        'scan_topic', default_value='/scan',
+        description='Topic del LiDAR.',
+    )
+    robot_name_arg = DeclareLaunchArgument(
+        'robot_name', default_value='puzzlebot_jetson_lidar_ed',
+        description='Nombre del xacro en puzzlebot_description/urdf/mcr2_robots/.',
     )
 
     params = LaunchConfiguration('params_file')
@@ -128,8 +156,8 @@ def generate_launch_description():
         name='ekf_localisation',
         parameters=[params, {'use_sim_time': use_sim_time}],
         remappings=[
-            ('wr', '/VelocityEncR'),
-            ('wl', '/VelocityEncL'),
+            ('wr', LaunchConfiguration('wr_topic')),
+            ('wl', LaunchConfiguration('wl_topic')),
         ],
         output='screen',
     )
@@ -154,6 +182,10 @@ def generate_launch_description():
         executable='bug2',
         name='bug2',
         parameters=[params, {'use_sim_time': use_sim_time}],
+        remappings=[
+            ('cmd_vel', LaunchConfiguration('cmd_vel_topic')),
+            ('scan', LaunchConfiguration('scan_topic')),
+        ],
         output='screen',
         condition=nav_on,
     )
@@ -193,6 +225,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg, map_arg, enable_nav_arg,
+        wr_topic_arg, wl_topic_arg, cmd_vel_arg, scan_arg, robot_name_arg,
         map_server,
         map_lifecycle,
         robot_state_pub,
