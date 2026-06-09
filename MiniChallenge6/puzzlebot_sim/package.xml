@@ -19,10 +19,15 @@
   <depend>python3-opencv</depend>
   <depend>cv_bridge</depend>
   <depend>puzzlebot_msgs</depend>
+  <!-- aruco_ros_bridge importa aruco_msgs en runtime (la PC lo necesita):
+       sudo apt install ros-humble-aruco-msgs -->
+  <exec_depend>aruco_msgs</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <depend>rclpy</depend>
   <depend>robot_state_publisher</depend>
+  <!-- real_robot_launch lanza el joint_state_publisher (no-gui) -->
+  <exec_depend>joint_state_publisher</exec_depend>
   <depend>joint_state_publisher_gui</depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>rqt_plot</exec_depend>

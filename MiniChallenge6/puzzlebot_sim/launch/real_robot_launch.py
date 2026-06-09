@@ -145,7 +145,11 @@ def generate_launch_description():
         condition=nav_on,
     )
 
-    bug0 = Node(
+    # Controlador de navegación REAL: nodo monolítico bug2 (go-to-goal +
+    # evasión Bug2 sobre /scan). OJO: el README describe una arquitectura de
+    # 2 capas (multi_point_nav + obstacle_avoidance), pero el robot real corre
+    # ESTE nodo bug2. La variable se llama nav_controller para no confundir.
+    nav_controller = Node(
         package='puzzlebot_sim',
         executable='bug2',
         name='bug2',
@@ -196,7 +200,7 @@ def generate_launch_description():
         laser_tf,
         ekf,
         point_gen,
-        bug0,
+        nav_controller,
         aruco_bridge,
         cov_viz,
         rviz,

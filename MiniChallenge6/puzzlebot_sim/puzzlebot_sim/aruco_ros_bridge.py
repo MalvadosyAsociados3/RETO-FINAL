@@ -23,6 +23,7 @@ Publica:
 """
 
 import sys
+import copy
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -106,7 +107,9 @@ class ArucoRosBridge(Node):
                 continue
             d = ArucoDetection()
             d.id = mid
-            d.pose = m.pose.pose   # PoseWithCovariance -> Pose
+            # copia profunda: NO mutar el Pose del mensaje de entrada (es del
+            # buffer de DDS y puede ser reusado / leido por otros callbacks).
+            d.pose = copy.deepcopy(m.pose.pose)   # PoseWithCovariance -> Pose
             # Aplica correccion de escala a la posicion (no a la orientacion).
             # Compensa errores de calibracion de camara.
             if self.scale != 1.0:

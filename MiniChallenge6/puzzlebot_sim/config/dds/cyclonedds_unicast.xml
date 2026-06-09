@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Perfil CycloneDDS para descubrimiento UNICAST (PC <-> Jetson por WiFi).
+
+  Problema que resuelve: los APs WiFi (incluido el hotspot de la Jetson en
+  10.42.0.1) suelen DESCARTAR el tráfico multicast que ROS 2 usa por defecto
+  para descubrir nodos. Síntoma: "no ve los nodos" desde la PC aunque todo
+  corra. Aquí desactivamos multicast y listamos peers unicast explícitos.
+
+  Uso (en la PC):  ver scripts/mc6_real_env.sh  ->  export CYCLONEDDS_URI=...
+  IMPORTANTE: la Jetson debe usar el MISMO ROS_DOMAIN_ID y RMW
+  (rmw_cyclonedds_cpp) y un perfil equivalente que liste la IP de ESTA PC
+  como <Peer> (averíguala con `hostname -I`).
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+    <General>
+      <!-- autodetermine elige la interfaz WiFi activa. Si tienes varias
+           interfaces (ethernet + wifi), pon el nombre fijo, p.ej.:
+           <NetworkInterface name="wlan0" /> -->
+      <Interfaces>
+        <NetworkInterface autodetermine="true" multicast="default" />
+      </Interfaces>
+      <!-- Sin multicast: el discovery será 100% unicast a los Peers de abajo -->
+      <AllowMulticast>false</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <Peers>
+        <!-- Jetson (hotspot / AP) -->
+        <Peer address="10.42.0.1" />
+        <!-- nodos locales de la PC (EKF, RViz, nav) -->
+        <Peer address="localhost" />
+        <!-- Si la Jetson NO es el AP y conoces la IP de la PC en esa red,
+             agrégala aquí también. -->
+      </Peers>
+    </Discovery>
+
+    <Internal>
+      <!-- Tolera enlaces WiFi con pérdidas: más reintentos antes de cortar -->
+      <Watermarks>
+        <WhcHigh>500kB</WhcHigh>
+      </Watermarks>
+    </Internal>
+  </Domain>
+</CycloneDDS>
