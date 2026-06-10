@@ -1,27 +1,27 @@
 """
-Final Challenge — Launch para el Puzzlebot REAL.
+Final Challenge — Launch para el Puzzlebot REAL (version minic3 portada).
 
-Esto NO inicia Gazebo. Solo lanza los nodos que viven en la PC:
+Stack basado en el codigo "minic3Bueno" probado por el equipo. Nodos:
 
   robot_state_publisher  (URDF para RViz)
-  ekf_localisation       (predict encoders + correct ArUco)
-  multi_point_nav        (go-to-goal -> /pre_cmd_vel)
-  obstacle_avoidance     (/pre_cmd_vel -> /cmd_vel, reactivo con LiDAR)
-  point_generator        (publica /current_goal y /planned_path)
-  aruco_ros_bridge       (aruco_msgs/MarkerArray -> ArucoDetectionArray)
+  mc3_puzzle_transforms  (TF estatica map->odom)
+  mc3_joint_states       (encoders -> /joint_states)
+  mc3_loc_node           (EKF: predict encoders + correct ArUco)
+  mc3_aruco_node          (/marker_publisher/markers -> /aruco_measurement)
+  mc3_bug2_node           (bug2 con wall-follow)
+  point_generator        (publica /current_goal y /planned_path - opcional)
   covariance_visualizer  (elipse 2D para RViz)
   rviz2
 
 Asume que en el robot ya estan corriendo:
-  - aruco_jetson.launch.py        (ros_deep_learning + camera_info_publisher +
-                                   aruco_ros marker_publisher)
-  - Firmware de encoders, LiDAR y suscriptor de /cmd_vel
+  - aruco_jetson.launch.py  (camera + aruco_ros marker_publisher)
+  - Firmware micro-ROS (encoders, /VelocityEncR, /VelocityEncL, /scan, /cmd_vel)
 """
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -29,113 +29,97 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_sim = get_package_share_directory('puzzlebot_sim')
-    pkg_desc = get_package_share_directory('puzzlebot_description')
 
-    robot_name = 'puzzlebot_jetson_lidar_ed'
-    robot_xacro = os.path.join(
-        pkg_desc, 'urdf', 'mcr2_robots', f'{robot_name}.xacro',
-    )
+    # URDF de minic3Bueno (probado), instalado en este mismo paquete.
+    robot_urdf = os.path.join(pkg_sim, 'urdf', 'puzzlebot.urdf')
     default_params = os.path.join(
         pkg_sim, 'config', 'real_robot_params.yaml',
     )
     default_rviz = os.path.join(pkg_sim, 'rviz', 'final_challenge.rviz')
-    default_map = os.path.join(pkg_sim, 'maps', 'map_maze_real.yaml')
 
     params_arg = DeclareLaunchArgument(
         'params_file', default_value=default_params,
-        description='YAML con parametros para la corrida en el robot real',
+        description='YAML con parametros (waypoints, pose inicial, etc.)',
     )
     use_rviz_arg = DeclareLaunchArgument(
         'use_rviz', default_value='true',
-        description='Lanzar RViz en la PC',
     )
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
-        description='Falso en robot real (usamos el reloj del sistema)',
     )
     rviz_arg = DeclareLaunchArgument(
         'rviz_config', default_value=default_rviz,
     )
-    map_arg = DeclareLaunchArgument(
-        'map_yaml', default_value=default_map,
-        description='Mapa OccupancyGrid (.yaml) que publica /map para RViz',
-    )
     enable_nav_arg = DeclareLaunchArgument(
         'enable_navigation', default_value='true',
-        description='true = autonomous nav (point_gen+multi_point+obstacle_avoid). '
-                    'false = solo EKF + ArUco bridge (para demo de teleop / Escena A).',
+        description='true = autonomous nav (bug2+point_gen). false = solo EKF.',
     )
+    # Pose inicial del robot (medida fisicamente).
+    x0_arg = DeclareLaunchArgument('x0', default_value='0.23')
+    y0_arg = DeclareLaunchArgument('y0', default_value='-0.28')
+    theta0_arg = DeclareLaunchArgument('theta0', default_value='0.0')
 
     params = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    x0 = LaunchConfiguration('x0')
+    y0 = LaunchConfiguration('y0')
+    theta0 = LaunchConfiguration('theta0')
 
-    # Robot state publisher (URDF para RViz; el firmware del Jetson tambien
-    # puede publicarlo, en cuyo caso podrias omitir este nodo).
-    robot_description = Command(['xacro ', robot_xacro])
+    # Robot description (URDF) — leido directamente del archivo.
+    with open(robot_urdf, 'r') as f:
+        robot_description = f.read()
     robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         parameters=[{
-            'robot_description': ParameterValue(robot_description, value_type=str),
+            'robot_description': robot_description,
             'use_sim_time': use_sim_time,
         }],
         output='screen',
     )
 
-    # map_server: publica el mapa OccupancyGrid del laberinto en /map para
-    # que RViz pueda mostrarlo y para que el profesor use "2D Pose Estimate"
-    # y "2D Goal Pose" haciendo click sobre el mapa.
-    map_server = Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='map_server',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'yaml_filename': LaunchConfiguration('map_yaml'),
-        }],
-        output='screen',
-    )
-    # nav2_map_server es un lifecycle node -> hay que activarlo. El
-    # lifecycle_manager con autostart=True lo configura y lo activa solo.
-    map_lifecycle = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='lifecycle_manager_map',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'autostart': True,
-            'node_names': ['map_server'],
-        }],
-        output='screen',
-    )
-
-    # joint_state_publisher: publica /joint_states con posiciones default
-    # (cero) si el firmware del Jetson no lo hace. Sin esto las TFs de las
-    # llantas no se resuelven y el RobotModel aparece "bugeado" en RViz
-    # (llanta separada del chasis, etc.). Si el firmware ya publica
-    # /joint_states, esto se ignora (gana el ultimo publisher).
-    joint_state_pub = Node(
-        package='joint_state_publisher',
-        executable='joint_state_publisher',
-        name='joint_state_publisher',
-        parameters=[{'use_sim_time': use_sim_time, 'rate': 30}],
-        output='screen',
-    )
-
-    ekf = Node(
+    # TF estatica map->odom (necesaria para RViz Fixed Frame=map).
+    transforms = Node(
         package='puzzlebot_sim',
-        executable='ekf_localisation',
-        name='ekf_localisation',
-        parameters=[params, {'use_sim_time': use_sim_time}],
-        remappings=[
-            ('wr', '/VelocityEncR'),
-            ('wl', '/VelocityEncL'),
+        executable='mc3_puzzle_transforms',
+        name='puzzle_transforms',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+    )
+
+    # Joint states (encoders -> /joint_states para RViz robot model).
+    joint_states = Node(
+        package='puzzlebot_sim',
+        executable='mc3_joint_states',
+        name='joint_state_node',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+    )
+
+    # EKF de localizacion.
+    loc = Node(
+        package='puzzlebot_sim',
+        executable='mc3_loc_node',
+        name='loc_node',
+        parameters=[
+            {'use_sim_time': use_sim_time,
+             'x0': x0, 'y0': y0, 'theta0': theta0},
         ],
         output='screen',
     )
 
     nav_on = IfCondition(LaunchConfiguration('enable_navigation'))
 
+    # ArUco bridge (marker_publisher -> /aruco_measurement).
+    aruco = Node(
+        package='puzzlebot_sim',
+        executable='mc3_aruco_node',
+        name='aruco_node',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+    )
+
+    # Generador de waypoints (publica /current_goal del YAML).
     point_gen = Node(
         package='puzzlebot_sim',
         executable='point_generator',
@@ -145,38 +129,32 @@ def generate_launch_description():
         condition=nav_on,
     )
 
-    multi_nav = Node(
+    # Bug2 navegacion.
+    bug2 = Node(
         package='puzzlebot_sim',
-        executable='multi_point_nav',
-        name='multi_point_nav',
-        parameters=[params, {'use_sim_time': use_sim_time}],
+        executable='mc3_bug2_node',
+        name='bug2_node',
+        parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
         condition=nav_on,
     )
 
-    obs_avoid = Node(
-        package='puzzlebot_sim',
-        executable='obstacle_avoidance',
-        name='obstacle_avoidance',
-        parameters=[params, {'use_sim_time': use_sim_time}],
-        output='screen',
-        condition=nav_on,
-    )
-
-    aruco_bridge = Node(
-        package='puzzlebot_sim',
-        executable='aruco_ros_bridge',
-        name='aruco_ros_bridge',
-        parameters=[params, {'use_sim_time': use_sim_time}],
-        output='screen',
-    )
-
+    # Visualizacion de la covarianza de la EKF en RViz (opcional).
     cov_viz = Node(
         package='puzzlebot_sim',
         executable='covariance_visualizer',
         name='covariance_visualizer',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
+    )
+
+    # TF estatico de compatibilidad: el URDF de minic3 ya define 'laser'.
+    # Mantenemos un alias por si algun nodo legacy publica al frame antiguo.
+    laser_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='laser_frame_alias',
+        arguments=['0', '0', '0', '0', '0', '0', 'laser', 'laser_frame'],
     )
 
     rviz = Node(
@@ -189,16 +167,16 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg, map_arg, enable_nav_arg,
-        map_server,
-        map_lifecycle,
+        params_arg, use_rviz_arg, use_sim_time_arg, rviz_arg,
+        enable_nav_arg, x0_arg, y0_arg, theta0_arg,
         robot_state_pub,
-        joint_state_pub,
-        ekf,
+        transforms,
+        joint_states,
+        laser_tf,
+        loc,
+        aruco,
         point_gen,
-        multi_nav,
-        obs_avoid,
-        aruco_bridge,
+        bug2,
         cov_viz,
         rviz,
     ])

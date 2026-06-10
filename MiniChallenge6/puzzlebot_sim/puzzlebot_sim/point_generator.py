@@ -35,7 +35,7 @@ class PointGenerator(Node):
         self.declare_parameter('waypoints_y', [0.0, 1.0, 1.0, 0.0])
         self.declare_parameter('loop_trajectory', True)
         self.declare_parameter('startup_delay', 1.5)
-        self.declare_parameter('frame_id', 'odom')
+        self.declare_parameter('frame_id', 'map')
         # Modo "evaluacion": el robot se detiene en cada waypoint y espera
         # una senal manual del profesor para avanzar al siguiente. Cumple el
         # requisito del PDF "Detenerse completamente al llegar al objetivo.

@@ -27,9 +27,9 @@
 ekf_localisation:
   ros__parameters:
     wheel_radius: 0.05
-    wheel_base:   0.19
+    wheel_base:   0.19    # valor SIR_DUCK_MODE (que funciona con su EKF)
     update_rate:  50.0
-    publish_map_odom_tf: true
+    publish_map_odom_tf: true    # EKF publica map->odom
     odom_frame: odom
     base_frame: base_footprint
     world_frame: map
@@ -44,14 +44,22 @@ ekf_localisation:
     initial_y:    -0.28
     initial_theta: 0.0
 
-    # Ruido por rueda (calibrar). Empiezo conservador en real.
-    kr: 0.03
-    kl: 0.03
+    # Incertidumbre inicial (pose medida a mano, no es perfecta)
+    initial_cov_xy: 0.02      # m^2 (~14 cm de incertidumbre en x,y)
+    initial_cov_theta: 0.1    # rad^2 (~18 deg de incertidumbre en theta)
+
+    # Ruido por rueda. Valores altos = EKF confia MENOS en encoders
+    # y da mas peso a ArUco. Subido de 0.03 para scale_correction=1.40.
+    # Ruido por rueda SUBIDO — modela el slippage de encoders durante
+    # rotaciones. Con valor mas alto, la EKF acepta correcciones ArUco
+    # mas grandes para compensar el drift acumulado.
+    kr: 0.15
+    kl: 0.15
 
     # Camara: offset respecto al centro del robot (base_footprint).
     # Tu medicion: camara en world=(41, -28), centro robot en world=(32.5, -28)
     #   -> offset = (41 - 32.5, -28 - (-28)) = (8.5, 0) cm
-    camera_x:    0.085     # 8.5 cm forward del centro del robot
+    camera_x:    0.04      # 4 cm forward del centro del robot
     camera_y:    0.0
     camera_yaw:  0.0
 
@@ -62,11 +70,14 @@ ekf_localisation:
 
     # Ruido de medicion ArUco (m^2). aruco_var_base es el ruido a 0 m;
     # aumenta linealmente con la distancia.
-    # Con markers de 10 cm a 320x240 px, la pose es ruidosa mas alla de ~1.2 m
-    # asi que recortamos el rango maximo y subimos un poco la varianza.
-    aruco_var_base:      0.010
-    aruco_var_per_meter: 0.015     # crece mas rapido (markers chicos)
-    aruco_max_distance:  1.5       # descarta detecciones mas alla de 1.5 m
+    # Valores bajos = EKF confia MAS en ArUco y MENOS en encoders.
+    # Necesario porque los encoders acumulan error de theta rapidamente.
+    aruco_var_base:      0.001      # bajado: confiar MAS en ArUco
+    aruco_var_per_meter: 0.003      # bajado: confiar mas en markers lejanos
+    aruco_max_distance:  3.0        # ampliar rango: mas correcciones = menos drift
+    # Valores SIR_DUCK_MODE exactos de su YAML.
+    aruco_mahal_gate:    5.0
+    aruco_max_jump:      2.00
 
     # ---------- MAPA DE MARKERS FISICOS ----------
     # Coordenadas medidas EXACTAS de la hoja de calculo del usuario (cm -> m),
@@ -96,42 +107,89 @@ ekf_localisation:
     #
     # Edita la ULTIMA entrada de cada fila (marker_xs y marker_ys) segun
     # corresponda. El yaw es el mismo para los dos casos.
+    # 701 ACTUALIZADO a P2 (2.82, 0.00) — confirmado por equipo karifm.
     marker_ids:   [70,    705,    706,    708,     703,   702,     75,     701    ]
-    marker_xs:    [1.85,  0.89,   2.455,  1.185,   1.24,  0.27,    2.75,   1.30   ]  # <- 701: 1.30 (P1) o 2.82 (P2)
-    marker_ys:    [-0.30, -1.20,  -1.255, -1.21,   -2.07, -1.83,   -2.40,  0.00   ]  # <- 701: 0.00 (igual P1 y P2)
+    marker_xs:    [1.85,  0.89,   2.455,  1.185,   1.24,  0.27,    2.75,   2.82   ]
+    marker_ys:    [-0.30, -1.20,  -1.255, -1.21,   -2.07, -1.83,   -2.40,  0.00   ]
     marker_yaws:  [3.1416, 1.5708, 3.1416, -1.5708, 0.0,   -1.5708, 1.5708, -1.5708]
 
-# --- Multi-point nav -> /pre_cmd_vel ---
-# Tuneo para pasillos angostos (60 cm) en pista 3 m x 3 m: velocidades chicas
-# para que el robot tenga tiempo de reaccionar a paredes cercanas.
-multi_point_nav:
+# --- Bug0: go-to-goal + obstacle avoidance en un solo nodo ---
+# Tuneo para pasillos angostos (60 cm) en pista 3 m x 3 m.
+bug0:
   ros__parameters:
     control_rate: 20.0
     goal_tolerance: 0.15
-    k_linear:  0.40
-    k_angular: 0.8            # menos agresivo al rotar (antes 1.2)
-    max_linear: 0.10
-    max_angular: 0.5          # mas lento al rotar (antes 0.7)
-    align_threshold_deg: 35.0 # solo gira en sitio si error > 35 deg (antes 20)
-                              # asi avanza Y rota a la vez con errores chicos
-
-# --- Obstacle avoidance: /pre_cmd_vel -> /cmd_vel ---
-# Pasillos 60 cm. Tuneo conservador para minimizar entradas a FOLLOW_WALL
-# (que es el estado que hace que se vea "girando como loco" cuando rebota
-# entre obstaculo-pared-libre).
-obstacle_avoidance:
-  ros__parameters:
-    control_rate: 20.0
-    obstacle_distance: 0.15       # solo paredes a < 15 cm como obstaculo (antes 0.22)
-    forward_cone_deg: 16.0        # cono mas angosto (antes 20)
-    wall_target_distance: 0.18
+    obstacle_distance: 0.25       # 25 cm trigger (pasillos angostos)
+    forward_cone_deg: 30.0
+    wall_target_distance: 0.20   # 20 cm de pared (cabe en pasillo de 60 cm)
     wall_sector_min_deg: 60.0
     wall_sector_max_deg: 120.0
+    clear_path_cone_deg: 40.0    # cono mas estrecho para verificar salida
+    clear_path_distance: 0.30    # 30 cm libres bastan para salir de FOLLOW_WALL
+    k_linear: 0.40
+    k_angular: 0.8
+    max_linear: 0.10
+    max_angular: 0.5
+    align_threshold_deg: 35.0
     wall_k: 2.0
     wall_linear: 0.05
-    max_angular: 0.6              # mas lento al girar (antes 0.7)
-    clear_front_hysteresis: 1.5   # mas histeresis (antes 1.3)
-    publish_zero_when_idle: true
+    wall_progress_threshold: 0.05  # 5 cm de progreso bastan para intentar salir
+
+# --- Bug2 (sectores + Mano Derecha) ---
+# Codigo portado de mobile_robotics: navegacion DETERMINISTA por el laberinto.
+# Cuando goal_x > right_wall_goal_x activa modo MANO DERECHA: el robot
+# se compromete a seguir la pared derecha hasta ver el marker 75 (deep
+# en el maze). Garantia teorica de llegada en laberintos.
+bug2:
+  ros__parameters:
+    controller_update_rate: 25.0
+    controller_type: "BUG2"
+    distance_tolerance: 0.12
+    # Velocidades MUY conservadoras para minimizar slippage de encoders
+    # durante rotaciones (causa principal de deriva sin ArUco visible).
+    v_max: 0.08                # bajado de 0.10
+    w_max: 0.5                 # bajado de 0.7 — rotacion muy lenta
+    p2p_v_Kp: 0.5
+    p2p_w_Kp: 0.5              # bajado de 0.7
+    # Wall-following — MAS MARGEN para evitar que la rueda toque pared en
+    # rotaciones (el LiDAR esta en el centro, las ruedas sobresalen ~8cm).
+    following_walls_distance: 0.35           # subido — wheel queda a 27cm
+    front_stop_distance: 0.30
+    lookahead_distance: 0.20                 # bajado de 0.30 — outer corner mas estricto
+    bug2_line_tol: 0.30                  # relajado de 0.20 — sale antes de wall
+    min_wall_follow_distance: 0.05
+    fw_w_Kp: 0.5                             # bajado para suavidad
+    fw_e_Kp: 2.0                             # bajado
+    fw_linear_speed: 0.06                    # bajado — 6 cm/s en wall
+    fw_outer_corner_angular_speed: 0.4       # bajado — corner muy suave
+    fw_outer_corner_linear_speed: 0.10
+    # Aperturas angulares (rad)
+    # AMPLIADAS para cerrar el "dead zone" donde la rueda chocaba sin ser
+    # detectada (entre front sector y side sector).
+    side_open_angle: 0.9      # antes 0.5236 — cubre +/- 52deg desde 90deg
+    front_open_angle: 0.5     # antes 0.4 — cubre +/- 29deg
+    # Offset LiDAR: 0.0 confirmado por usuario — el LiDAR fisicamente apunta
+    # al frente del robot, no necesita rotacion en software.
+    lidar_yaw_offset: 0.0
+    # Suavizado angular (rad/s^2)
+    max_w_accel: 4.0
+    # Waypoints de la imagen del usuario:
+    #   (1) 0.36, -0.275  ← punto de partida
+    #   (2) 0.36, -0.94
+    #   (3) 0.36, -2.72
+    #   (4) 2.10, -0.30
+    #   (5) 2.72, -2.72
+    #   (6) 1.70, -2.04
+    # Lista vacia = espera goals por /current_goal del point_generator.
+    waypoints_x: []
+    waypoints_y: []
+    loop: false
+    # CALIBRACION desactivada — usuario reporto que avanzar al principio
+    # antes de poder ver markers laterales hace que se pierda mas.
+    calibration_enable: false
+    calibration_speed: 0.04
+    calibration_max_time: 10.0
+    calibration_min_detections: 15
 
 # --- Trayectoria (los profesores la dan EN VIVO durante la evaluacion).
 # Robot arranca en (0, 0) = esquina inferior-izquierda mirando +X.
@@ -149,18 +207,17 @@ obstacle_avoidance:
 # del usuario): borrar y poner la que dicten los profes.
 point_generator:
   ros__parameters:
-    # interactive_mode: TRUE = el robot NO se mueve solo. Espera goals que
-    # vienen del boton "2D Goal Pose" de RViz. La lista de waypoints abajo
-    # se IGNORA. Ideal para el demo del 10/jun con profesores.
-    # FALSE = usa la lista del yaml (modo evaluacion alternativo).
+    # interactive_mode: TRUE = espera goals de RViz "2D Goal Pose" o `goal X Y`.
+    # FALSE = sigue la lista de waypoints abajo (modo evaluacion automatica).
     interactive_mode: true
-    # Estos waypoints SOLO se usan si interactive_mode=false.
-    waypoints_x: [1.0,  2.5,  2.0,  1.0,  0.4]
-    waypoints_y: [-0.3, -0.8, -1.7, -1.5, -0.5]
+    # Trayectoria de prueba: linea recta corta para verificar que el
+    # robot avanza sin desfasarse. Cambiar por los waypoints del profe.
+    waypoints_x: [0.69]
+    waypoints_y: [-1.20]
     loop_trajectory: false
-    manual_advance: false
+    manual_advance: true
     startup_delay: 3.0
-    frame_id: odom
+    frame_id: map
 
 # --- Adapter aruco_ros -> nuestro msg ---
 aruco_ros_bridge:
@@ -176,7 +233,10 @@ aruco_ros_bridge:
     #     1.0  = sin correccion (calibracion perfecta)
     #     0.73 = corrige el ~37% residual (recomendado para tu setup actual)
     # Cuando recalibren la camara correctamente, pongan 1.0.
-    scale_correction: 0.73
+    # Calculado de medidas reales: promedio(real_z / tvec_z) = 0.696
+    # Ratios por marker: 70→0.684, 75→0.680, 702→0.685, 703→0.674,
+    #   705→0.718, 706→0.702, 708→0.711, 701P1→0.728, 701P2→0.683
+    scale_correction: 1.40
 
 # --- Covarianza viz ---
 covariance_visualizer:

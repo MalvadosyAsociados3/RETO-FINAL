@@ -43,6 +43,12 @@ setup(
             'obstacle_avoidance = puzzlebot_sim.obstacle_avoidance:main',
             'covariance_visualizer = puzzlebot_sim.covariance_visualizer:main',
             'aruco_ros_bridge = puzzlebot_sim.aruco_ros_bridge:main',
+            # Nodos del codigo "minic3Bueno" (probado por el equipo).
+            'mc3_loc_node = puzzlebot_sim.mc3_loc_node:main',
+            'mc3_bug2_node = puzzlebot_sim.mc3_bug2_node:main',
+            'mc3_aruco_node = puzzlebot_sim.mc3_aruco_node:main',
+            'mc3_joint_states = puzzlebot_sim.mc3_joint_states:main',
+            'mc3_puzzle_transforms = puzzlebot_sim.mc3_puzzle_transforms:main',
         ],
     },
 )
