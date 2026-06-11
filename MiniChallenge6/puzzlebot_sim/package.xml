@@ -15,7 +15,6 @@
   <depend>ros2launch</depend>
   <depend>tf2_ros_py</depend>
   <depend>python3-numpy</depend>
-  <depend>python3-transforms3d</depend>
   <depend>python3-opencv</depend>
   <depend>cv_bridge</depend>
   <depend>puzzlebot_msgs</depend>
@@ -23,11 +22,7 @@
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <depend>rclpy</depend>
   <depend>robot_state_publisher</depend>
-  <depend>joint_state_publisher_gui</depend>
   <exec_depend>rviz2</exec_depend>
-  <exec_depend>rqt_plot</exec_depend>
-  <exec_depend>rqt_graph</exec_depend>
-  <exec_depend>rqt_image_view</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

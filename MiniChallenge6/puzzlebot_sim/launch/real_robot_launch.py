@@ -128,8 +128,8 @@ def generate_launch_description():
         name='ekf_localisation',
         parameters=[params, {'use_sim_time': use_sim_time}],
         remappings=[
-            ('wr', '/VelocityEncR'),
-            ('wl', '/VelocityEncL'),
+            ('wr', '/VelocityEncL'),   # SWAP: firmware publica R/L invertidos
+            ('wl', '/VelocityEncR'),
         ],
         output='screen',
     )
@@ -147,8 +147,8 @@ def generate_launch_description():
 
     bug0 = Node(
         package='puzzlebot_sim',
-        executable='bug2',
-        name='bug2',
+        executable='bug0',
+        name='bug0',
         parameters=[params, {'use_sim_time': use_sim_time}],
         output='screen',
         condition=nav_on,

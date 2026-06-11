@@ -5,10 +5,14 @@ Suscribe:
   /odom         (nav_msgs/Odometry)       - pose estimada (localisation con covarianza)
   /scan         (sensor_msgs/LaserScan)   - LiDAR (Gazebo de robotec_sim_ws)
   /current_goal (geometry_msgs/PoseStamped) - waypoint actual (point_generator)
+  /aruco_correction (std_msgs/Empty)      - notificacion de correccion ArUco aceptada
 
 Publica:
   /cmd_vel      (geometry_msgs/Twist)     - comando al simulador
   /goal_reached (std_msgs/Empty)          - handshake con point_generator
+  /bug0_state_text (visualization_msgs/Marker) - texto del estado en RViz
+  /bug0_goal_line  (visualization_msgs/Marker) - linea robot->goal en RViz
+  /bug0_path_trail (visualization_msgs/Marker) - trail del path recorrido
 
 State machine:
   GO_TO_GOAL:
@@ -18,6 +22,8 @@ State machine:
     - Mantener la pared a la IZQUIERDA del robot a ~0.35 m (P sobre el error de distancia).
     - Si el cono hacia el goal queda libre Y nos hemos acercado al goal vs el hit_point,
       regresar a GO_TO_GOAL.
+  ARUCO_PAUSE:
+    - ArUco correccion aceptada: detenerse 1s, luego avanzar lento.
 
 Wall following: pared a la izquierda (obstaculo a mano izquierda del robot).
 Restriccion del challenge: solo NumPy + libreria estandar de Python.
@@ -26,14 +32,16 @@ Restriccion del challenge: solo NumPy + libreria estandar de Python.
 import math
 import numpy as np
 import rclpy
+import rclpy.duration
 from rclpy.node import Node
 from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
                        DurabilityPolicy, qos_profile_sensor_data)
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Twist, PoseStamped, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty, ColorRGBA
 from visualization_msgs.msg import Marker
+from builtin_interfaces.msg import Duration
 
 
 def quat_to_yaw(q):
@@ -52,11 +60,20 @@ class Bug0(Node):
     STATE_GO_TO_GOAL = 0
     STATE_FOLLOW_WALL = 1
     STATE_GOAL_REACHED = 2
+    STATE_ARUCO_PAUSE = 3
 
     STATE_NAMES = {
         STATE_GO_TO_GOAL: 'GO_TO_GOAL',
         STATE_FOLLOW_WALL: 'FOLLOW_WALL',
         STATE_GOAL_REACHED: 'GOAL_REACHED',
+        STATE_ARUCO_PAUSE: 'ARUCO_PAUSE',
+    }
+
+    STATE_COLORS = {
+        STATE_GO_TO_GOAL: ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0),    # verde
+        STATE_FOLLOW_WALL: ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0),   # rojo
+        STATE_GOAL_REACHED: ColorRGBA(r=0.0, g=0.5, b=1.0, a=1.0),  # azul
+        STATE_ARUCO_PAUSE: ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0),   # amarillo
     }
 
     def __init__(self):
@@ -76,10 +93,17 @@ class Bug0(Node):
         self.declare_parameter('k_angular', 1.5)
         self.declare_parameter('max_linear', 0.18)
         self.declare_parameter('max_angular', 1.0)
+        self.declare_parameter('turn_max_angular', 1.5)  # angular alto para giros de 90
         self.declare_parameter('align_threshold_deg', 25.0)
         self.declare_parameter('wall_k', 2.5)
         self.declare_parameter('wall_linear', 0.10)
         self.declare_parameter('wall_progress_threshold', 0.10)
+        self.declare_parameter('min_follow_wall_time', 1.5)  # segundos minimos en FOLLOW_WALL
+        # ArUco pause
+        self.declare_parameter('aruco_pause_duration', 2.0)      # segundos de pausa total
+        self.declare_parameter('aruco_cooldown', 5.0)            # segundos antes de permitir otra pausa
+        # Path trail
+        self.declare_parameter('trail_sample_dist', 0.03)        # metros entre puntos del trail
 
         rate = float(self.get_parameter('control_rate').value)
         self.goal_tol = float(self.get_parameter('goal_tolerance').value)
@@ -94,10 +118,15 @@ class Bug0(Node):
         self.kw = float(self.get_parameter('k_angular').value)
         self.vmax = float(self.get_parameter('max_linear').value)
         self.wmax = float(self.get_parameter('max_angular').value)
+        self.turn_wmax = float(self.get_parameter('turn_max_angular').value)
         self.align_thr = math.radians(float(self.get_parameter('align_threshold_deg').value))
         self.wall_k = float(self.get_parameter('wall_k').value)
         self.wall_v = float(self.get_parameter('wall_linear').value)
         self.wall_progress = float(self.get_parameter('wall_progress_threshold').value)
+        self.min_fw_time = float(self.get_parameter('min_follow_wall_time').value)
+        self.aruco_pause_dur = float(self.get_parameter('aruco_pause_duration').value)
+        self.aruco_cooldown_dur = float(self.get_parameter('aruco_cooldown').value)
+        self.trail_sample_dist = float(self.get_parameter('trail_sample_dist').value)
 
         # --- Estado del robot ---
         self.x = 0.0
@@ -120,8 +149,22 @@ class Bug0(Node):
         self.last_state = None
         self.goal_reached_published = False
         self.wall_follow_start_dist_to_goal = None
+        self._follow_wall_start_time = None
         self._tick_count = 0
         self._log_interval = int(rate * 2)  # log cada ~2 seg
+
+        # ArUco pause state
+        self._aruco_pause_start = None   # timestamp de inicio de pausa
+        self._state_before_pause = self.STATE_GO_TO_GOAL
+        self._aruco_cooldown_until = None  # ignora correcciones hasta este timestamp
+
+        # Anti-spin: detectar si GO_TO_GOAL solo gira sin avanzar
+        self._gtg_align_start = None     # timestamp cuando empezo a girar en GTG
+
+        # Path trail
+        self._trail_points = []    # list of (x, y, state)
+        self._last_trail_x = None
+        self._last_trail_y = None
 
         # --- QoS ---
         reliable_qos = QoSProfile(
@@ -143,11 +186,16 @@ class Bug0(Node):
             LaserScan, 'scan', self.scan_cb, qos_profile_sensor_data)
         self.goal_sub = self.create_subscription(
             PoseStamped, 'current_goal', self.goal_cb, latched_qos)
+        self.aruco_sub = self.create_subscription(
+            Empty, 'aruco_correction', self.aruco_correction_cb, reliable_qos)
 
         # --- Pubs ---
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.reached_pub = self.create_publisher(Empty, 'goal_reached', reliable_qos)
         self.goal_marker_pub = self.create_publisher(Marker, 'goal_marker', 10)
+        self.state_text_pub = self.create_publisher(Marker, 'bug0_state_text', 10)
+        self.goal_line_pub = self.create_publisher(Marker, 'bug0_goal_line', 10)
+        self.path_trail_pub = self.create_publisher(Marker, 'bug0_path_trail', 10)
 
         # --- Timer ---
         self.timer = self.create_timer(1.0 / rate, self.tick)
@@ -156,6 +204,8 @@ class Bug0(Node):
             f'Bug 0 iniciado: obs_dist={self.obs_dist} m, '
             f'cono_frontal={math.degrees(self.front_cone):.0f} deg, '
             f'wall_target={self.wall_target} m (IZQUIERDA), '
+            f'vmax={self.vmax}, wmax={self.wmax}, turn_wmax={self.turn_wmax}, '
+            f'aruco_pause={self.aruco_pause_dur}s, aruco_cooldown={self.aruco_cooldown_dur}s, '
             f'ctrl_rate={rate} Hz'
         )
 
@@ -168,7 +218,6 @@ class Bug0(Node):
         self.have_odom = True
 
     def scan_cb(self, msg: LaserScan):
-        # Sustituye inf/nan por range_max para poder usar np.min sin problemas
         ranges = np.asarray(msg.ranges, dtype=np.float32)
         bad = ~np.isfinite(ranges)
         ranges = np.where(bad, msg.range_max, ranges)
@@ -180,7 +229,6 @@ class Bug0(Node):
     def goal_cb(self, msg: PoseStamped):
         new_x = float(msg.pose.position.x)
         new_y = float(msg.pose.position.y)
-        # Trata como goal nuevo si cambio
         if (self.goal_x is None or
                 abs(new_x - self.goal_x) > 0.01 or
                 abs(new_y - self.goal_y) > 0.01):
@@ -189,9 +237,35 @@ class Bug0(Node):
             self.state = self.STATE_GO_TO_GOAL
             self.goal_reached_published = False
             self.wall_follow_start_dist_to_goal = None
+            self._aruco_pause_start = None
             self._publish_goal_marker()
             self.get_logger().info(
                 f'Bug 0: nuevo goal ({new_x:.2f}, {new_y:.2f})')
+
+    def aruco_correction_cb(self, _msg: Empty):
+        """ArUco correccion aceptada por el EKF -> pausar para estabilizar.
+        En FOLLOW_WALL solo pausa si el frente esta libre (tramo recto);
+        si hay pared al frente (girando en esquina), no pausar."""
+        if self.state == self.STATE_GOAL_REACHED:
+            return
+        # En FOLLOW_WALL: pausar solo en tramo recto (frente libre)
+        if self.state == self.STATE_FOLLOW_WALL:
+            if self.scan_ranges is not None and self.front_min() < self.obs_dist:
+                return  # girando en esquina, no pausar
+        # Ignorar si ya estamos en pausa (evita resetear el timer)
+        if self.state == self.STATE_ARUCO_PAUSE:
+            return
+        # Ignorar si estamos en cooldown post-pausa
+        now = self.get_clock().now()
+        if self._aruco_cooldown_until is not None:
+            if now < self._aruco_cooldown_until:
+                return
+            self._aruco_cooldown_until = None
+        self._state_before_pause = self.state
+        self._set_state(self.STATE_ARUCO_PAUSE)
+        self._aruco_pause_start = now
+        self.get_logger().info(
+            f'Bug 0: ArUco correccion -> ARUCO_PAUSE ({self.aruco_pause_dur}s)')
 
     def _publish_goal_marker(self):
         if self.goal_x is None:
@@ -210,12 +284,96 @@ class Bug0(Node):
         m.scale.x = 0.15
         m.scale.y = 0.15
         m.scale.z = 0.10
-        # Verde si en camino, azul si alcanzado
         if self.goal_reached_published:
             m.color = ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.8)
         else:
             m.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)
         self.goal_marker_pub.publish(m)
+
+    # --------------------------------------------------------- Visualization
+
+    def _publish_state_text(self):
+        """Publica un texto flotante sobre el robot con el estado actual."""
+        m = Marker()
+        m.header.frame_id = 'base_footprint'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'bug0_state'
+        m.id = 0
+        m.type = Marker.TEXT_VIEW_FACING
+        m.action = Marker.ADD
+        m.pose.position.z = 0.35  # encima del robot
+        m.pose.orientation.w = 1.0
+        m.scale.z = 0.12  # tamano del texto
+        m.color = self.STATE_COLORS.get(self.state, ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0))
+        m.text = self.STATE_NAMES.get(self.state, '???')
+        m.lifetime = Duration(sec=0, nanosec=500_000_000)  # 0.5s
+        self.state_text_pub.publish(m)
+
+    def _publish_goal_line(self):
+        """Linea desde el robot al goal en frame map (fija en el mapa)."""
+        if self.goal_x is None or not self.have_odom:
+            return
+        m = Marker()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'bug0_goal_line'
+        m.id = 0
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.scale.x = 0.02  # grosor de la linea
+
+        # Color segun estado
+        if self.state == self.STATE_GO_TO_GOAL:
+            m.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.7)  # verde
+        elif self.state == self.STATE_FOLLOW_WALL:
+            m.color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.7)  # naranja
+        else:
+            m.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=0.7)  # amarillo
+
+        p1 = Point(x=float(self.x), y=float(self.y), z=0.02)
+        p2 = Point(x=float(self.goal_x), y=float(self.goal_y), z=0.02)
+        m.points = [p1, p2]
+        m.lifetime = Duration(sec=0, nanosec=500_000_000)
+        self.goal_line_pub.publish(m)
+
+    def _update_trail(self):
+        """Agrega punto al trail si el robot se movio suficiente."""
+        if not self.have_odom:
+            return
+        if self._last_trail_x is None:
+            self._last_trail_x = self.x
+            self._last_trail_y = self.y
+            self._trail_points.append((self.x, self.y, self.state))
+            return
+        dx = self.x - self._last_trail_x
+        dy = self.y - self._last_trail_y
+        if math.hypot(dx, dy) >= self.trail_sample_dist:
+            self._trail_points.append((self.x, self.y, self.state))
+            self._last_trail_x = self.x
+            self._last_trail_y = self.y
+            # Limitar a 5000 puntos maximo
+            if len(self._trail_points) > 5000:
+                self._trail_points = self._trail_points[-4000:]
+
+    def _publish_path_trail(self):
+        """Publica el trail del path recorrido, coloreado por estado."""
+        if len(self._trail_points) < 2:
+            return
+        m = Marker()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'bug0_trail'
+        m.id = 0
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.scale.x = 0.015  # grosor
+        m.pose.orientation.w = 1.0
+
+        for (px, py, st) in self._trail_points:
+            m.points.append(Point(x=float(px), y=float(py), z=0.01))
+            m.colors.append(self.STATE_COLORS.get(st, ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)))
+
+        self.path_trail_pub.publish(m)
 
     # ---------------------------------------------------- LiDAR utilities
 
@@ -255,7 +413,7 @@ class Bug0(Node):
     def path_to_goal_clear(self) -> bool:
         """Cono en direccion al goal mas alla de clear_path_distance."""
         if self.scan_ranges is None or self.scan_angle_inc == 0.0:
-            return True  # Sin scan, asumimos camino libre
+            return True
         goal_dir = self.goal_direction_angle()
         half = self.clear_cone / 2.0
         return self._sector_min(goal_dir - half, goal_dir + half) > self.clear_dist
@@ -268,25 +426,53 @@ class Bug0(Node):
 
         have_scan = self.scan_ranges is not None
         if not have_scan:
-            # No moverse sin LiDAR — evita chocar al arrancar.
             self.cmd_pub.publish(Twist())
             return
 
         dist = self.distance_to_goal()
 
-        # --- Log periodico + marker visual (cada ~2 seg) ---
+        # --- Trail + visualizacion periodica ---
+        self._update_trail()
         self._tick_count += 1
         if self._tick_count % self._log_interval == 0:
             self._publish_goal_marker()
+            self._publish_path_trail()
             front = self.front_min() if have_scan else float('inf')
             left = self.left_min() if have_scan else float('inf')
             ang = self.goal_direction_angle()
             self.get_logger().info(
                 f'[DIAG] st={self.STATE_NAMES[self.state]} '
-                f'pose=({self.x:.2f},{self.y:.2f},{math.degrees(self.theta):.0f}°) '
+                f'pose=({self.x:.2f},{self.y:.2f},{math.degrees(self.theta):.0f}) '
                 f'goal=({self.goal_x:.2f},{self.goal_y:.2f}) dist={dist:.2f}m '
-                f'ang={math.degrees(ang):.0f}° front={front:.2f} left={left:.2f}'
+                f'ang={math.degrees(ang):.0f} front={front:.2f} left={left:.2f}'
             )
+        # Estado y linea al goal: cada 5 ticks (~4Hz a 20Hz)
+        if self._tick_count % 5 == 0:
+            self._publish_state_text()
+            self._publish_goal_line()
+
+        # --- ARUCO_PAUSE: detenerse para que el EKF estabilice ---
+        if self.state == self.STATE_ARUCO_PAUSE:
+            now = self.get_clock().now()
+            if self._aruco_pause_start is not None:
+                elapsed = (now - self._aruco_pause_start).nanoseconds * 1e-9
+                if elapsed < self.aruco_pause_dur:
+                    # Parado total: el EKF sigue corrigiendo con ArUco
+                    self.cmd_pub.publish(Twist())
+                    return
+                else:
+                    # Pausa terminada -> cooldown y volver al estado anterior
+                    self._aruco_cooldown_until = now + rclpy.duration.Duration(
+                        seconds=self.aruco_cooldown_dur)
+                    self._set_state(self._state_before_pause)
+                    self._aruco_pause_start = None
+                    # Reiniciar timer de FOLLOW_WALL para que goal_path_free
+                    # no salga prematuramente con tiempo acumulado pre-pausa
+                    if self.state == self.STATE_FOLLOW_WALL:
+                        self.wall_follow_start_time = now
+                    self.get_logger().info(
+                        f'Bug 0: pausa terminada -> {self.STATE_NAMES[self.state]} '
+                        f'(cooldown {self.aruco_cooldown_dur:.0f}s)')
 
         # --- Llegada al goal ---
         if dist < self.goal_tol:
@@ -304,12 +490,11 @@ class Bug0(Node):
         # --- Maquina de estados ---
         if self.state == self.STATE_GO_TO_GOAL:
             front = self.front_min()
-            goal_ang = abs(self.goal_direction_angle())
-            # Solo entrar a FOLLOW_WALL si el obstaculo esta al frente Y
-            # el goal esta mas o menos al frente (< 90 deg). Si el goal
-            # esta detras, primero girar hacia el goal — no bloquearse.
-            if front < self.obs_dist and goal_ang < math.radians(90.0):
+            ang = abs(self.goal_direction_angle())
+            if front < self.obs_dist:
                 self.wall_follow_start_dist_to_goal = dist
+                self._follow_wall_start_time = self.get_clock().now()
+                self._gtg_align_start = None
                 self._set_state(self.STATE_FOLLOW_WALL)
                 self.get_logger().info(
                     f'Bug 0: obstaculo a {front:.2f}m -> FOLLOW_WALL, '
@@ -317,23 +502,62 @@ class Bug0(Node):
                 )
                 self._wall_follow_step()
             else:
+                # Anti-spin: si lleva >4s girando (goal detras), ir a FOLLOW_WALL
+                if ang > self.align_thr:
+                    now = self.get_clock().now()
+                    if self._gtg_align_start is None:
+                        self._gtg_align_start = now
+                    elif (now - self._gtg_align_start).nanoseconds * 1e-9 > 4.0:
+                        self.wall_follow_start_dist_to_goal = dist
+                        self._follow_wall_start_time = now
+                        self._gtg_align_start = None
+                        self._set_state(self.STATE_FOLLOW_WALL)
+                        self.get_logger().warn(
+                            f'Bug 0: SPIN detectado (>{4.0}s girando, ang={math.degrees(ang):.0f}) '
+                            f'-> FOLLOW_WALL')
+                        self._wall_follow_step()
+                        return
+                else:
+                    self._gtg_align_start = None
                 self._go_to_goal_step()
 
         elif self.state == self.STATE_FOLLOW_WALL:
-            # Volver a GO_TO_GOAL si:
-            #   (a) progreso desde el hit point + cono al goal libre, O
-            #   (b) perdimos la pared (left muy lejos) + cono al goal libre
-            #       — evita quedar girando en circulos en espacio abierto
             left = self.left_min()
             front_clear = self.front_min() > self.obs_dist
-            wall_lost = left > self.wall_target * 2.5 and front_clear
+            # Tiempo que llevamos en FOLLOW_WALL
+            fw_elapsed = 0.0
+            if self._follow_wall_start_time is not None:
+                fw_elapsed = (self.get_clock().now() - self._follow_wall_start_time).nanoseconds * 1e-9
+            # wall_lost solo cuenta si:
+            # 1. Llevamos suficiente tiempo en FW (evita loop al girar en dead-end)
+            # 2. El goal esta DELANTE del robot (|ang| < 90°) — si esta detras,
+            #    seguir la pared es mejor que girar 180° y quedarse oscilando
+            goal_ang = abs(self.goal_direction_angle())
+            goal_ahead = goal_ang < math.radians(70.0)
+            wall_lost = (left > self.wall_target * 2.5 and front_clear
+                         and fw_elapsed > self.min_fw_time and goal_ahead)
             progressed = (
                 self.wall_follow_start_dist_to_goal is not None
                 and dist < self.wall_follow_start_dist_to_goal - self.wall_progress
+                and goal_ahead
             )
 
-            if (progressed or wall_lost) and self.path_to_goal_clear():
-                reason = 'progreso+camino libre' if progressed else 'pared perdida'
+            # Bug0 puro: si el camino al goal esta libre y el goal esta
+            # CASI enfrente, salir de FOLLOW_WALL.  Condiciones estrictas
+            # para no salir prematuramente despues del primer giro:
+            #   - goal a < 30° (no basta con < 70°)
+            #   - frente despejado
+            #   - path_to_goal_clear (cono libre de obstaculos)
+            #   - al menos 5 s en FOLLOW_WALL (tiempo real, no min_fw_time)
+            goal_path_free = (goal_ang < math.radians(30.0)
+                              and front_clear
+                              and self.path_to_goal_clear()
+                              and fw_elapsed > 5.0)
+
+            if (progressed or wall_lost or goal_path_free) and self.path_to_goal_clear():
+                reason = ('camino al goal libre' if goal_path_free
+                          else 'progreso+camino libre' if progressed else 'pared perdida')
+                self._gtg_align_start = None
                 self._set_state(self.STATE_GO_TO_GOAL)
                 self.get_logger().info(
                     f'Bug 0: {reason}, dist={dist:.2f}m -> GO_TO_GOAL')
@@ -346,77 +570,71 @@ class Bug0(Node):
 
     def _set_state(self, new_state):
         if new_state != self.state:
+            old_name = self.STATE_NAMES.get(self.state, '?')
+            new_name = self.STATE_NAMES.get(new_state, '?')
+            self.get_logger().info(
+                f'Bug 0: {old_name} -> {new_name} at ({self.x:.2f},{self.y:.2f})')
             self.last_state = self.state
             self.state = new_state
 
     # ---------------------------------------------------- Acciones de control
 
-    def _go_to_goal_step(self):
+    def _go_to_goal_step(self, override_v=None):
         """Controlador P al goal (NumPy puro, sin librerias externas)."""
         dist = self.distance_to_goal()
         ang = self.goal_direction_angle()
 
         if abs(ang) > self.align_thr:
-            # Muy desalineado: gira en sitio (v=0)
+            # Giro de alineacion: usar turn_wmax (alto para menos patinaje)
             v = 0.0
             w = self.kw * ang
+            w = max(-self.turn_wmax, min(self.turn_wmax, w))
         else:
-            v = min(self.kv * dist, self.vmax)
+            v_target = override_v if override_v is not None else min(self.kv * dist, self.vmax)
+            v = max(0.0, min(self.vmax, v_target))
             w = self.kw * ang
-
-        v = max(0.0, min(self.vmax, v))
-        w = max(-self.wmax, min(self.wmax, w))
+            w = max(-self.wmax, min(self.wmax, w))
 
         msg = Twist()
         msg.linear.x = float(v)
         msg.angular.z = float(w)
         self.cmd_pub.publish(msg)
 
-    def _wall_follow_step(self):
-        """Wall following con la pared a la IZQUIERDA del robot.
-
-        - Si hay pared al frente (<obs_dist): gira a la derecha en sitio
-          para poner la pared en la IZQUIERDA.
-        - Si no hay pared cercana por la izquierda (left > 3*wall_target):
-          avanza recto (no aplicar PID, evita "circles in open space" cuando
-          se entra a FOLLOW_WALL antes de poder ver la pared por el costado).
-        - Si hay pared a la izquierda: P sobre (left_min - wall_target),
-          saturando el error a |+- wall_target| para evitar w al maximo.
-        """
+    def _wall_follow_step(self, override_v=None):
+        """Wall following con la pared a la IZQUIERDA del robot."""
         front = self.front_min()
         left = self.left_min()
+        wv = override_v if override_v is not None else self.wall_v
 
-        # Pared al frente (entrando a FOLLOW_WALL o callejon): gira derecha
+        # Pared al frente: gira derecha con turn_wmax
         if front < self.obs_dist:
             msg = Twist()
             msg.linear.x = 0.0
-            msg.angular.z = -self.wmax * 0.7
+            msg.angular.z = -self.turn_wmax * 0.7
             self.cmd_pub.publish(msg)
             return
 
-        # No hay pared visible por la izquierda: girar a la izquierda para
-        # rodear la esquina y reencontrar la pared (clasico Bug0 corner turn).
+        # No hay pared visible por la izquierda: girar izquierda
         if left > self.wall_target * 2.5:
             msg = Twist()
-            msg.linear.x = float(self.wall_v)
-            msg.angular.z = float(self.wmax * 0.5)   # gira izquierda
+            msg.linear.x = float(wv)
+            msg.angular.z = float(self.wmax * 0.5)
             self.cmd_pub.publish(msg)
             return
 
-        # Sigue la pared con un P saturado (evita w explosivo si left es grande)
+        # Sigue la pared con un P saturado
         error = max(-self.wall_target, min(self.wall_target,
                                            left - self.wall_target))
         w = self.wall_k * error
         w = max(-self.wmax, min(self.wmax, w))
 
         msg = Twist()
-        msg.linear.x = float(self.wall_v)
+        msg.linear.x = float(wv)
         msg.angular.z = float(w)
         self.cmd_pub.publish(msg)
 
 
 def main(args=None):
-    import time
     rclpy.init(args=args)
     node = Bug0()
 
@@ -425,11 +643,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # Publica velocidad cero y hace spin para que DDS envie el mensaje
-        # antes de destruir el nodo. Sin spin_some los mensajes no se flushean.
         stop = Twist()
         try:
-            node.timer.cancel()  # Para el tick para que no interfiera
+            node.timer.cancel()
             for _ in range(10):
                 node.cmd_pub.publish(stop)
                 rclpy.spin_once(node, timeout_sec=0.05)

@@ -48,12 +48,14 @@ import math
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, PoseWithCovarianceStamped
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32
 from tf2_ros import TransformBroadcaster
 
+from std_msgs.msg import Empty as EmptyMsg
 from puzzlebot_msgs.msg import ArucoDetectionArray
 
 
@@ -106,9 +108,25 @@ class EkfLocalisation(Node):
         # Se aumenta con la distancia al marker (mas lejos = mas ruidoso).
         self.declare_parameter('aruco_var_base', 0.01)        # m^2 a 0 m
         self.declare_parameter('aruco_var_per_meter', 0.005)  # m^2 por metro adicional
+        self.declare_parameter('aruco_min_distance', 0.30)     # m: descartar medidas muy cerca (solvePnP ruidoso)
         self.declare_parameter('aruco_max_distance', 4.0)     # m: descartar medidas mas lejos
         self.declare_parameter('aruco_mahal_gate', 5.0)      # umbral Mahalanobis: rechazar outliers
         self.declare_parameter('aruco_max_jump', 0.15)       # m: clamp maximo del salto por correccion
+
+        # --- Q dinamico: inflar ruido de theta durante giros ---
+        self.declare_parameter('turn_q_multiplier', 8.0)     # factor de inflacion de Q_theta en giros
+        self.declare_parameter('turn_threshold', 0.15)       # rad/s: umbral para considerar "girando"
+
+        # --- Correccion de heading por LiDAR (fit de pared) ---
+        self.declare_parameter('lidar_heading_enable', True)
+        self.declare_parameter('lidar_heading_sector_min_deg', 60.0)   # sector izquierdo
+        self.declare_parameter('lidar_heading_sector_max_deg', 120.0)
+        self.declare_parameter('lidar_heading_max_range', 0.80)        # solo puntos cercanos
+        self.declare_parameter('lidar_heading_min_points', 8)          # minimo para fit
+        self.declare_parameter('lidar_heading_max_residual', 0.02)     # m: max error del fit
+        self.declare_parameter('lidar_heading_var', 0.01)              # rad^2: varianza de la medicion
+        self.declare_parameter('lidar_heading_innov_gate_deg', 15.0)   # max innovacion permitida (deg)
+        self.declare_parameter('lidar_heading_cooldown_steps', 25)    # bloqueo post-giro (~5s a 5Hz rate-limited)
 
         # Cargar parametros
         self.r = float(self.get_parameter('wheel_radius').value)
@@ -134,9 +152,27 @@ class EkfLocalisation(Node):
 
         self.aruco_var_base = float(self.get_parameter('aruco_var_base').value)
         self.aruco_var_per_m = float(self.get_parameter('aruco_var_per_meter').value)
+        self.aruco_min_dist = float(self.get_parameter('aruco_min_distance').value)
         self.aruco_max_dist = float(self.get_parameter('aruco_max_distance').value)
         self.mahal_gate = float(self.get_parameter('aruco_mahal_gate').value)
         self.max_jump = float(self.get_parameter('aruco_max_jump').value)
+
+        # Q dinamico
+        self.turn_q_mult = float(self.get_parameter('turn_q_multiplier').value)
+        self.turn_thr = float(self.get_parameter('turn_threshold').value)
+
+        # LiDAR heading
+        self.lidar_heading_en = bool(self.get_parameter('lidar_heading_enable').value)
+        self.lidar_sec_min = math.radians(float(self.get_parameter('lidar_heading_sector_min_deg').value))
+        self.lidar_sec_max = math.radians(float(self.get_parameter('lidar_heading_sector_max_deg').value))
+        self.lidar_max_range = float(self.get_parameter('lidar_heading_max_range').value)
+        self.lidar_min_pts = int(self.get_parameter('lidar_heading_min_points').value)
+        self.lidar_max_resid = float(self.get_parameter('lidar_heading_max_residual').value)
+        self.lidar_heading_var = float(self.get_parameter('lidar_heading_var').value)
+        self.lidar_innov_gate = math.radians(float(self.get_parameter('lidar_heading_innov_gate_deg').value))
+        self.lidar_cooldown_steps = int(self.get_parameter('lidar_heading_cooldown_steps').value)
+        self._is_turning = False
+        self._cooldown_counter = 0
 
         # Mapa: dict {id: (mx, my, m_yaw)}
         ids = [int(v) for v in self.get_parameter('marker_ids').value]
@@ -198,20 +234,36 @@ class EkfLocalisation(Node):
             depth=10,
         )
 
+        # --- LiDAR state ---
+        self._scan_ranges = None
+        self._scan_angle_min = 0.0
+        self._scan_angle_inc = 0.0
+
         # --- Subs ---
         self.wr_sub = self.create_subscription(Float32, 'wr', self.wr_cb, sensor_qos)
         self.wl_sub = self.create_subscription(Float32, 'wl', self.wl_cb, sensor_qos)
         self.aruco_sub = self.create_subscription(
             ArucoDetectionArray, 'aruco_detections', self.aruco_cb, qos,
         )
+        if self.lidar_heading_en:
+            self.scan_sub = self.create_subscription(
+                LaserScan, 'scan', self.scan_cb, qos_profile_sensor_data,
+            )
         # /initialpose viene del boton "2D Pose Estimate" de RViz: permite
         # resetear la pose del EKF en vivo sin reiniciar el nodo.
         self.initpose_sub = self.create_subscription(
             PoseWithCovarianceStamped, '/initialpose', self.initpose_cb, qos,
         )
 
+        # --- Contadores internos ---
+        self._last_wr_time = self.get_clock().now()
+        self._last_wl_time = self.get_clock().now()
+        self._lidar_tick = 0
+        self._diag_count = 0
+
         # --- Pubs ---
         self.odom_pub = self.create_publisher(Odometry, 'odom', qos)
+        self.aruco_correction_pub = self.create_publisher(EmptyMsg, 'aruco_correction', qos)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.timer = self.create_timer(self.dt, self.step)
@@ -292,9 +344,16 @@ class EkfLocalisation(Node):
 
     def wr_cb(self, msg: Float32):
         self.wr = float(msg.data)
+        self._last_wr_time = self.get_clock().now()
 
     def wl_cb(self, msg: Float32):
         self.wl = float(msg.data)
+        self._last_wl_time = self.get_clock().now()
+
+    def scan_cb(self, msg: LaserScan):
+        self._scan_ranges = np.asarray(msg.ranges, dtype=np.float32)
+        self._scan_angle_min = float(msg.angle_min)
+        self._scan_angle_inc = float(msg.angle_increment)
 
     def aruco_cb(self, msg: ArucoDetectionArray):
         # Procesa todas las detecciones que correspondan a un marker conocido.
@@ -386,6 +445,11 @@ class EkfLocalisation(Node):
 
         Q = grad_w @ Sigma_delta @ grad_w.T
 
+        # Q dinamico: inflar ruido de theta cuando el robot esta girando
+        # (contra-rotacion o giro agresivo causa patinaje -> encoders mienten)
+        if abs(w_ang) > self.turn_thr:
+            Q[2, 2] *= self.turn_q_mult
+
         # Sigma_k = F Sigma_{k-1} F^T + Q
         self.Sigma = F @ self.Sigma @ F.T + Q
 
@@ -427,6 +491,8 @@ class EkfLocalisation(Node):
 
         # Distancia desde la camara al marker (en base 2D, sin descontar offset).
         dist = math.hypot(X_obs, Y_obs)
+        if dist < self.aruco_min_dist:
+            return
         if dist > self.aruco_max_dist:
             return
 
@@ -507,6 +573,9 @@ class EkfLocalisation(Node):
         I3 = np.eye(3)
         self.Sigma = (I3 - K @ H) @ self.Sigma
 
+        # Notificar que hubo correccion ArUco aceptada
+        self.aruco_correction_pub.publish(EmptyMsg())
+
         # Diagnostico: log cada correccion ArUco
         jump = math.hypot(float(delta[0]), float(delta[1]))
         self.get_logger().info(
@@ -519,11 +588,197 @@ class EkfLocalisation(Node):
             f'θ: {math.degrees(old_th):.1f}°->{math.degrees(self.theta):.1f}°'
         )
 
+    # ------------------------------------------------- LiDAR heading --
+
+    def correct_heading_from_lidar(self):
+        """Ajusta una linea a los puntos del sector izquierdo del LiDAR
+        usando PCA. Las paredes del laberinto estan alineadas a 0/90/180/270.
+        El angulo de la pared da theta absoluto modulo 90 deg.
+
+        Rate-limited a ~5Hz y con gate de innovacion para evitar que un
+        snap al multiplo de 90 deg incorrecto refuerce el error."""
+        # Rate limit: solo cada 10 ciclos (~5Hz a 50Hz)
+        self._lidar_tick += 1
+        if self._lidar_tick % 10 != 0:
+            return
+
+        if self._scan_ranges is None or self._scan_angle_inc == 0.0:
+            return
+
+        # Detectar si estamos girando
+        w_ang = abs(self.r * (self.wr - self.wl) / self.L)
+        if w_ang > self.turn_thr:
+            if not self._is_turning:
+                self._is_turning = True
+                self.get_logger().info('[LIDAR-HEADING] paused: robot turning')
+            return  # NO corregir durante giros
+        else:
+            if self._is_turning:
+                # Acaba de terminar el giro: cooldown para dar prioridad a ArUco
+                self._is_turning = False
+                self._cooldown_counter = self.lidar_cooldown_steps
+                self.get_logger().info(
+                    f'[LIDAR-HEADING] turn ended, cooldown {self.lidar_cooldown_steps} steps')
+
+        # Cooldown post-giro: no corregir, dejar que ArUco haga la correccion grande
+        if self._cooldown_counter > 0:
+            self._cooldown_counter -= 1
+            return
+
+        ranges = self._scan_ranges
+        n = len(ranges)
+
+        # Extraer puntos del sector izquierdo en frame base (x,y)
+        idx_lo = int(round((self.lidar_sec_min - self._scan_angle_min) / self._scan_angle_inc))
+        idx_hi = int(round((self.lidar_sec_max - self._scan_angle_min) / self._scan_angle_inc))
+        idx_lo = max(0, min(n - 1, idx_lo))
+        idx_hi = max(0, min(n - 1, idx_hi))
+
+        indices = np.arange(idx_lo, idx_hi + 1)
+        angles = self._scan_angle_min + indices * self._scan_angle_inc
+        r = ranges[idx_lo:idx_hi + 1]
+
+        # Filtrar: solo puntos validos y cercanos
+        valid = np.isfinite(r) & (r > 0.05) & (r < self.lidar_max_range)
+        n_valid = int(np.sum(valid))
+        if n_valid < self.lidar_min_pts:
+            self.get_logger().debug(
+                f'[LIDAR-HEADING] skip: only {n_valid} pts < {self.lidar_min_pts} min')
+            return
+
+        angles = angles[valid]
+        r = r[valid]
+        px = r * np.cos(angles)
+        py = r * np.sin(angles)
+
+        # PCA: direccion principal de los puntos = direccion de la pared
+        cx = float(np.mean(px))
+        cy = float(np.mean(py))
+        dx = px - cx
+        dy = py - cy
+        cov_xx = float(np.mean(dx * dx))
+        cov_xy = float(np.mean(dx * dy))
+        cov_yy = float(np.mean(dy * dy))
+
+        # Angulo del primer componente principal (direccion de la pared en base)
+        wall_angle_base = 0.5 * math.atan2(2.0 * cov_xy, cov_xx - cov_yy)
+
+        # Calidad del fit: ratio de varianza explicada (eigenvalue ratio)
+        trace = cov_xx + cov_yy
+        det = cov_xx * cov_yy - cov_xy * cov_xy
+        disc = math.sqrt(max(0.0, trace * trace / 4.0 - det))
+        lam1 = trace / 2.0 + disc
+        lam2 = trace / 2.0 - disc
+        if lam1 < 1e-9:
+            return
+        linearity = 1.0 - lam2 / lam1  # 1.0 = linea perfecta, 0.0 = circulo
+        if linearity < 0.9:
+            self.get_logger().debug(
+                f'[LIDAR-HEADING] skip: linearity={linearity:.2f} < 0.9 pts={n_valid}')
+            return  # puntos no forman una linea clara
+
+        # Residual: distancia RMS de los puntos a la linea PCA
+        # Normal de la pared: (-sin(wall_angle_base), cos(wall_angle_base))
+        nx = -math.sin(wall_angle_base)
+        ny = math.cos(wall_angle_base)
+        dists = dx * nx + dy * ny
+        residual = float(np.sqrt(np.mean(dists * dists)))
+        if residual > self.lidar_max_resid:
+            self.get_logger().debug(
+                f'[LIDAR-HEADING] skip: residual={residual:.4f}m > {self.lidar_max_resid}m')
+            return
+
+        # Para cada cardinal, calcular que theta implicaria y elegir el mas
+        # cercano al theta actual (respeta la intencion del giro de encoders)
+        best_theta = None
+        best_snap = None
+        best_err = float('inf')
+        for ref in [0.0, math.pi / 2, math.pi, -math.pi / 2]:
+            theta_cand = normalize_angle(ref - wall_angle_base)
+            err = abs(normalize_angle(theta_cand - self.theta))
+            if err < best_err:
+                best_err = err
+                best_theta = theta_cand
+                best_snap = ref
+
+        # Verificar que el snap es razonable (pared debe estar cerca de un cardinal)
+        wall_angle_world = normalize_angle(self.theta + wall_angle_base)
+        snap_check = abs(normalize_angle(wall_angle_world - best_snap))
+        if snap_check > math.radians(15.0):
+            self.get_logger().debug(
+                f'[LIDAR-HEADING-REJECT] snap_err={math.degrees(snap_check):.1f}deg '
+                f'wall_world={math.degrees(wall_angle_world):.1f}deg pts={n_valid}')
+            return  # pared no alineada a ejes
+
+        theta_measured = best_theta
+        innov_theta = normalize_angle(theta_measured - self.theta)
+
+        # Gate de innovacion como red de seguridad
+        if abs(innov_theta) > self.lidar_innov_gate:
+            self.get_logger().info(
+                f'[LIDAR-HEADING-GATE] innov={math.degrees(innov_theta):.1f}deg > '
+                f'gate={math.degrees(self.lidar_innov_gate):.0f}deg '
+                f'θ={math.degrees(self.theta):.1f}° snap={math.degrees(best_snap):.0f}° '
+                f'wall_base={math.degrees(wall_angle_base):.1f}deg pts={n_valid}')
+            return
+
+        # EKF correction con H = [0, 0, 1] (solo mide theta)
+        H = np.array([[0.0, 0.0, 1.0]])
+        R_lidar = np.array([[self.lidar_heading_var]])
+
+        S = H @ self.Sigma @ H.T + R_lidar
+        K = self.Sigma @ H.T / float(S[0, 0])
+
+        delta = (K * innov_theta).flatten()
+
+        old_th = self.theta
+        self.x += float(delta[0])
+        self.y += float(delta[1])
+        self.theta = normalize_angle(self.theta + float(delta[2]))
+        self._update_map_odom_offset()
+
+        self.Sigma = (np.eye(3) - K @ H) @ self.Sigma
+
+        # Log solo si la correccion es significativa
+        if abs(math.degrees(innov_theta)) > 1.0:
+            self.get_logger().info(
+                f'[LIDAR-HEADING] wall_base={math.degrees(wall_angle_base):.1f}deg '
+                f'snap={math.degrees(best_snap):.0f}deg '
+                f'innov={math.degrees(innov_theta):.1f}deg '
+                f'θ: {math.degrees(old_th):.1f}°->{math.degrees(self.theta):.1f}° '
+                f'resid={residual:.4f}m lin={linearity:.2f} pts={n_valid}'
+            )
+
     # ------------------------------------------------------------ Loop --
 
     def step(self):
+        # Watchdog: si no llegan encoders en >0.5s, asumir parado
+        now = self.get_clock().now()
+        stale = False
+        for attr in ('_last_wr_time', '_last_wl_time'):
+            if hasattr(self, attr):
+                dt_enc = (now - getattr(self, attr)).nanoseconds * 1e-9
+                if dt_enc > 0.5:
+                    stale = True
+        if stale:
+            self.wr = 0.0
+            self.wl = 0.0
+
         self.predict()
+        if self.lidar_heading_en:
+            self.correct_heading_from_lidar()
         self.publish_odom_and_tf()
+
+        # Diagnostico periodico (~2s)
+        self._diag_count += 1
+        if self._diag_count % 100 == 0:
+            v = self.r * (self.wr + self.wl) / 2.0
+            w_ang = self.r * (self.wr - self.wl) / self.L
+            self.get_logger().info(
+                f'[EKF-DIAG] pose=({self.x:.2f},{self.y:.2f},{math.degrees(self.theta):.1f}deg) '
+                f'wr={self.wr:.3f} wl={self.wl:.3f} v={v:.3f} w={w_ang:.4f} '
+                f'cov_th={self.Sigma[2,2]:.4f}'
+            )
 
 
 def main(args=None):

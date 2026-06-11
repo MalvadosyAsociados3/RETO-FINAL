@@ -27,7 +27,7 @@
 ekf_localisation:
   ros__parameters:
     wheel_radius: 0.05
-    wheel_base:   0.19
+    wheel_base:   0.18
     update_rate:  50.0
     publish_map_odom_tf: true    # EKF publica map->odom
     odom_frame: odom
@@ -49,14 +49,15 @@ ekf_localisation:
     initial_cov_theta: 0.1    # rad^2 (~18 deg de incertidumbre en theta)
 
     # Ruido por rueda. Valores altos = EKF confia MENOS en encoders
-    # y da mas peso a ArUco. Subido de 0.03 para scale_correction=1.40.
-    kr: 0.08
-    kl: 0.08
+    # y da mas peso a ArUco. Subido a 10.0 (como el companiero que ya le
+    # funciono): el EKF desconfia de encoders y ArUco REPOSICIONA al robot.
+    kr: 2.0
+    kl: 2.0
 
     # Camara: offset respecto al centro del robot (base_footprint).
     # Tu medicion: camara en world=(41, -28), centro robot en world=(32.5, -28)
     #   -> offset = (41 - 32.5, -28 - (-28)) = (8.5, 0) cm
-    camera_x:    0.04      # 4 cm forward del centro del robot
+    camera_x:    0.08      # 8 cm forward del centro del robot (lente a eje de ruedas)
     camera_y:    0.0
     camera_yaw:  0.0
 
@@ -69,11 +70,27 @@ ekf_localisation:
     # aumenta linealmente con la distancia.
     # Valores bajos = EKF confia MAS en ArUco y MENOS en encoders.
     # Necesario porque los encoders acumulan error de theta rapidamente.
-    aruco_var_base:      0.001      # bajado: confiar MAS en ArUco
+    aruco_var_base:      0.02       # como r_aruco del companiero: ArUco confiable
     aruco_var_per_meter: 0.003      # bajado: confiar mas en markers lejanos
-    aruco_max_distance:  3.0        # ampliar rango: mas correcciones = menos drift
-    aruco_mahal_gate:    5.0        # umbral Mahalanobis para rechazar outliers
-    aruco_max_jump:      2.00       # permitir correcciones grandes (el EKF gate decide)
+    aruco_min_distance:  0.30       # markers a menos de 30cm: solvePnP ruidoso, descartarlos
+    aruco_max_distance:  2.5        # markers hasta 2.5m (balance: correcciones tempranas vs ruido)
+    aruco_mahal_gate:    25.0       # umbral Mahalanobis: muy alto para aceptar correcciones post-giro con drift extremo
+    aruco_max_jump:      5.00       # sin limite practico: el Mahalanobis gate filtra, no el clamp
+
+    # Q dinamico: inflar ruido de theta durante giros (patinaje)
+    turn_q_multiplier: 8.0          # 8x mas ruido en theta cuando gira
+    turn_threshold:    0.40         # rad/s: umbral alto para que wall-follow steering (~0.2) no cuente como giro
+
+    # Correccion de heading por LiDAR (fit de pared)
+    lidar_heading_enable: true      # estabiliza theta cuando ArUco no es visible
+    lidar_heading_sector_min_deg: 60.0    # sector izquierdo del LiDAR
+    lidar_heading_sector_max_deg: 120.0
+    lidar_heading_max_range: 0.80         # solo paredes cercanas
+    lidar_heading_min_points: 8
+    lidar_heading_max_residual: 0.02      # m: fit bueno = pared recta
+    lidar_heading_var: 0.01               # rad^2: confianza en la medicion
+    lidar_heading_innov_gate_deg: 15.0    # permite correcciones medianas post-giro
+    lidar_heading_cooldown_steps: 5       # ~1s de bloqueo post-giro (que LiDAR corrija theta rapido)
 
     # ---------- MAPA DE MARKERS FISICOS ----------
     # Coordenadas medidas EXACTAS de la hoja de calculo del usuario (cm -> m),
@@ -104,17 +121,20 @@ ekf_localisation:
     # Edita la ULTIMA entrada de cada fila (marker_xs y marker_ys) segun
     # corresponda. El yaw es el mismo para los dos casos.
     marker_ids:   [70,    705,    706,    708,     703,   702,     75,     701    ]
-    marker_xs:    [1.85,  0.89,   2.455,  1.185,   1.24,  0.27,    2.75,   1.30   ]  # <- 701: 1.30 (P1) o 2.82 (P2)
-    marker_ys:    [-0.30, -1.20,  -1.255, -1.21,   -2.07, -1.83,   -2.40,  0.00   ]  # <- 701: 0.00 (igual P1 y P2)
+    marker_xs:    [1.85,  0.89,   2.39,   1.185,   1.24,  0.27,    2.74,   1.30   ]  # <- 701: 1.30 (P1) o 2.82 (P2)  75 corregido: 2.75->2.74
+    marker_ys:    [-0.30, -1.20,  -1.26,  -1.21,   -2.07, -1.83,   -2.40,  0.00   ]  # <- 701: 0.00 (igual P1 y P2)  706 corregido: -1.255->-1.26
     marker_yaws:  [3.1416, 1.5708, 3.1416, -1.5708, 0.0,   -1.5708, 1.5708, -1.5708]
 
 # --- Bug0: go-to-goal + obstacle avoidance en un solo nodo ---
 # Tuneo para pasillos angostos (60 cm) en pista 3 m x 3 m.
+# Velocidades MUY bajas para el robot real: 0.05 en recta, 0.05 wall-follow.
+# Giros de 90: turn_max_angular alto (1.5) para que las ruedas giren rapido
+# y no patinen (mas velocidad en encoders = mejor traccion).
 bug0:
   ros__parameters:
     control_rate: 20.0
     goal_tolerance: 0.15
-    obstacle_distance: 0.25       # 25 cm trigger (pasillos angostos)
+    obstacle_distance: 0.32       # subido: detectar antes para no chocar
     forward_cone_deg: 30.0
     wall_target_distance: 0.20   # 20 cm de pared (cabe en pasillo de 60 cm)
     wall_sector_min_deg: 60.0
@@ -123,40 +143,20 @@ bug0:
     clear_path_distance: 0.30    # 30 cm libres bastan para salir de FOLLOW_WALL
     k_linear: 0.40
     k_angular: 0.8
-    max_linear: 0.10
-    max_angular: 0.5
+    max_linear: 0.05             # LENTO en recta: 5 cm/s
+    max_angular: 0.5             # angular para wall-follow y correccion suave
+    turn_max_angular: 1.5        # angular ALTO para giros de 90 (reduce patinaje)
     align_threshold_deg: 35.0
     wall_k: 2.0
-    wall_linear: 0.05
-    wall_progress_threshold: 0.05  # 5 cm de progreso bastan para intentar salir
-
-# --- Bug2: usa M-line (start->goal) para decidir cuando dejar la pared ---
-# Mas predecible que Bug0: la condicion de salida es geometrica.
-bug2:
-  ros__parameters:
-    control_rate: 20.0
-    goal_tolerance: 0.15
-    obstacle_distance: 0.25         # original
-    forward_cone_deg: 40.0       # original
-    wall_target_distance: 0.27      # +2cm del original (0.25): margen para la llanta
-    wall_sector_min_deg: 60.0
-    wall_sector_max_deg: 120.0
-    right_sector_min_deg: -120.0   # sensor derecho: -120 a -60 deg
-    right_sector_max_deg: -60.0
-    right_emergency_distance: 0.22 # original
-    wall_lost_min_distance: 3.5    # original
-    stuck_timeout: 8.0             # original
-    stuck_distance: 0.05
-    m_line_tolerance: 0.12       # original
-    hit_min_distance: 0.25       # original
-    progress_threshold: 0.05     # original
-    k_linear: 0.35               # original
-    k_angular: 0.8
-    max_linear: 0.08             # original
-    max_angular: 0.5
-    align_threshold_deg: 35.0
-    wall_k: 2.2                  # ligeramente subido de 2.0 para mantener los 2cm extra
-    wall_linear: 0.04            # original
+    wall_linear: 0.05            # wall-follow lento: 5 cm/s
+    wall_progress_threshold: 0.80  # 80 cm de progreso antes de poder salir (paredes largas)
+    min_follow_wall_time: 0.5    # segundos minimos en FOLLOW_WALL (bajo para salir rapido si wall_lost)
+    # ArUco pause: cuando el EKF acepta una correccion ArUco, pausar para
+    # que el EKF estabilice la pose con multiples mediciones del marker.
+    aruco_pause_duration: 5.0    # segundos detenido (el EKF recibe ~15 correcciones)
+    aruco_cooldown: 3.0          # segundos antes de permitir otra pausa (corto para re-corregir)
+    # Trail del path para debug visual en RViz
+    trail_sample_dist: 0.03      # un punto cada 3 cm
 
 # --- Trayectoria (los profesores la dan EN VIVO durante la evaluacion).
 # Robot arranca en (0, 0) = esquina inferior-izquierda mirando +X.
@@ -181,8 +181,8 @@ point_generator:
     interactive_mode: false
     # Trayectoria de prueba: linea recta corta para verificar que el
     # robot avanza sin desfasarse. Cambiar por los waypoints del profe.
-    waypoints_x: [0.69]
-    waypoints_y: [-1.20]
+    waypoints_x: [2.80]
+    waypoints_y: [-0.30]
     loop_trajectory: false
     manual_advance: true
     startup_delay: 3.0
