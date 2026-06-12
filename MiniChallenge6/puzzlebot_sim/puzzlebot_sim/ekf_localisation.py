@@ -112,6 +112,7 @@ class EkfLocalisation(Node):
         self.declare_parameter('aruco_max_distance', 4.0)     # m: descartar medidas mas lejos
         self.declare_parameter('aruco_mahal_gate', 5.0)      # umbral Mahalanobis: rechazar outliers
         self.declare_parameter('aruco_max_jump', 0.15)       # m: clamp maximo del salto por correccion
+        self.declare_parameter('aruco_max_angle_jump', 0.175)  # rad (~10 deg): clamp independiente de heading
 
         # --- Q dinamico: inflar ruido de theta durante giros ---
         self.declare_parameter('turn_q_multiplier', 8.0)     # factor de inflacion de Q_theta en giros
@@ -156,6 +157,7 @@ class EkfLocalisation(Node):
         self.aruco_max_dist = float(self.get_parameter('aruco_max_distance').value)
         self.mahal_gate = float(self.get_parameter('aruco_mahal_gate').value)
         self.max_jump = float(self.get_parameter('aruco_max_jump').value)
+        self.max_angle_jump = float(self.get_parameter('aruco_max_angle_jump').value)
 
         # Q dinamico
         self.turn_q_mult = float(self.get_parameter('turn_q_multiplier').value)
@@ -559,6 +561,14 @@ class EkfLocalisation(Node):
             delta[2] *= scale
             self.get_logger().warn(
                 f'[ARUCO] id={mid} jump CLAMPED: {raw_jump:.3f}m -> {self.max_jump:.3f}m'
+            )
+
+        # Clamp independiente de heading
+        raw_angle_jump = abs(float(delta[2]))
+        if raw_angle_jump > self.max_angle_jump:
+            delta[2] *= self.max_angle_jump / raw_angle_jump
+            self.get_logger().warn(
+                f'[ARUCO] id={mid} angle CLAMPED: {math.degrees(raw_angle_jump):.1f}deg -> {math.degrees(self.max_angle_jump):.1f}deg'
             )
 
         old_x, old_y, old_th = self.x, self.y, self.theta

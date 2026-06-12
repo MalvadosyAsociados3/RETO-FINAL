@@ -74,8 +74,9 @@ ekf_localisation:
     aruco_var_per_meter: 0.003      # bajado: confiar mas en markers lejanos
     aruco_min_distance:  0.30       # markers a menos de 30cm: solvePnP ruidoso, descartarlos
     aruco_max_distance:  2.5        # markers hasta 2.5m (balance: correcciones tempranas vs ruido)
-    aruco_mahal_gate:    25.0       # umbral Mahalanobis: muy alto para aceptar correcciones post-giro con drift extremo
-    aruco_max_jump:      5.00       # sin limite practico: el Mahalanobis gate filtra, no el clamp
+    aruco_mahal_gate:    25.0       # umbral Mahalanobis: alto para aceptar correcciones post-giro
+    aruco_max_jump:      5.00       # sin limite practico
+    aruco_max_angle_jump: 0.087      # rad (~5 deg): clamp independiente de heading
 
     # Q dinamico: inflar ruido de theta durante giros (patinaje)
     turn_q_multiplier: 8.0          # 8x mas ruido en theta cuando gira
@@ -120,10 +121,10 @@ ekf_localisation:
     #
     # Edita la ULTIMA entrada de cada fila (marker_xs y marker_ys) segun
     # corresponda. El yaw es el mismo para los dos casos.
-    marker_ids:   [70,    705,    706,    708,     703,   702,     75,     701    ]
-    marker_xs:    [1.85,  0.89,   2.39,   1.185,   1.24,  0.27,    2.74,   1.30   ]  # <- 701: 1.30 (P1) o 2.82 (P2)  75 corregido: 2.75->2.74
-    marker_ys:    [-0.30, -1.20,  -1.26,  -1.21,   -2.07, -1.83,   -2.40,  0.00   ]  # <- 701: 0.00 (igual P1 y P2)  706 corregido: -1.255->-1.26
-    marker_yaws:  [3.1416, 1.5708, 3.1416, -1.5708, 0.0,   -1.5708, 1.5708, -1.5708]
+    marker_ids:   [70,    705,   706,   708,    703,   702,   75,    701,   710,   711,   712,   713,   714   ]
+    marker_xs:    [1.84,  0.93,  2.42,  1.19,   1.21,  0.00,  2.72,  2.77,  1.86,  3.02,  0.00,  0.37,  0.00  ]
+    marker_ys:    [-0.295,-1.23, -1.27, -1.25,  -2.09, -1.82, -2.40,  0.00, -0.28, -2.70, -0.92, -3.25, -0.26 ]
+    marker_yaws:  [3.1416, 1.5708, 3.1416, -1.5708, 0.0, -1.5708, 1.5708, -1.5708, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # --- Bug0: go-to-goal + obstacle avoidance en un solo nodo ---
 # Tuneo para pasillos angostos (60 cm) en pista 3 m x 3 m.
@@ -140,7 +141,7 @@ bug0:
     wall_sector_min_deg: 60.0
     wall_sector_max_deg: 120.0
     clear_path_cone_deg: 40.0    # cono mas estrecho para verificar salida
-    clear_path_distance: 0.30    # 30 cm libres bastan para salir de FOLLOW_WALL
+    clear_path_distance: 1.20    # 1.2m libres en cono del goal para salir de FOLLOW_WALL
     k_linear: 0.40
     k_angular: 0.8
     max_linear: 0.05             # LENTO en recta: 5 cm/s
@@ -150,10 +151,10 @@ bug0:
     wall_k: 2.0
     wall_linear: 0.05            # wall-follow lento: 5 cm/s
     wall_progress_threshold: 0.80  # 80 cm de progreso antes de poder salir (paredes largas)
-    min_follow_wall_time: 0.5    # segundos minimos en FOLLOW_WALL (bajo para salir rapido si wall_lost)
+    min_follow_wall_time: 0.75   # segundos minimos en FOLLOW_WALL
     # ArUco pause: cuando el EKF acepta una correccion ArUco, pausar para
     # que el EKF estabilice la pose con multiples mediciones del marker.
-    aruco_pause_duration: 5.0    # segundos detenido (el EKF recibe ~15 correcciones)
+    aruco_pause_duration: 2.0    # segundos detenido (limita correcciones acumuladas)
     aruco_cooldown: 3.0          # segundos antes de permitir otra pausa (corto para re-corregir)
     # Trail del path para debug visual en RViz
     trail_sample_dist: 0.03      # un punto cada 3 cm
@@ -195,7 +196,7 @@ aruco_ros_bridge:
     output_topic: '/aruco_detections'
     # Solo deja pasar markers de nuestro mapa. Bloquea falsos positivos
     # (e.g., un 249 fantasma que aruco_ros a veces mete encima del 702).
-    allowed_ids: [70, 706, 75, 701, 703, 705, 708, 702]
+    allowed_ids: [70, 706, 75, 701, 705, 708, 702]
     # CORRECCION DE ESCALA: tu calibracion de camara (ost.yaml @ 320x240)
     # sobre-reporta tvec ~46% mas grande que la realidad. Despues de poner
     # marker_size=0.094 en el Jetson, queda ~37% residual. Compensa aqui:

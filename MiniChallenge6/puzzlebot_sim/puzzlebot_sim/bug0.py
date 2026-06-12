@@ -469,7 +469,7 @@ class Bug0(Node):
                     # Reiniciar timer de FOLLOW_WALL para que goal_path_free
                     # no salga prematuramente con tiempo acumulado pre-pausa
                     if self.state == self.STATE_FOLLOW_WALL:
-                        self.wall_follow_start_time = now
+                        self._follow_wall_start_time = now
                     self.get_logger().info(
                         f'Bug 0: pausa terminada -> {self.STATE_NAMES[self.state]} '
                         f'(cooldown {self.aruco_cooldown_dur:.0f}s)')
@@ -502,21 +502,32 @@ class Bug0(Node):
                 )
                 self._wall_follow_step()
             else:
-                # Anti-spin: si lleva >4s girando (goal detras), ir a FOLLOW_WALL
+                # Anti-spin: si lleva >1.5s girando (goal detras), ir a FOLLOW_WALL
                 if ang > self.align_thr:
                     now = self.get_clock().now()
                     if self._gtg_align_start is None:
                         self._gtg_align_start = now
-                    elif (now - self._gtg_align_start).nanoseconds * 1e-9 > 4.0:
+                    elif (now - self._gtg_align_start).nanoseconds * 1e-9 > 1.5:
                         self.wall_follow_start_dist_to_goal = dist
                         self._follow_wall_start_time = now
                         self._gtg_align_start = None
                         self._set_state(self.STATE_FOLLOW_WALL)
                         self.get_logger().warn(
-                            f'Bug 0: SPIN detectado (>{4.0}s girando, ang={math.degrees(ang):.0f}) '
+                            f'Bug 0: SPIN detectado (>{1.5}s girando, ang={math.degrees(ang):.0f}) '
                             f'-> FOLLOW_WALL')
                         self._wall_follow_step()
                         return
+                # Si el goal esta detras del robot (>90°), volver a FOLLOW_WALL inmediatamente
+                if ang > math.radians(90.0):
+                    now = self.get_clock().now()
+                    self.wall_follow_start_dist_to_goal = dist
+                    self._follow_wall_start_time = now
+                    self._gtg_align_start = None
+                    self._set_state(self.STATE_FOLLOW_WALL)
+                    self.get_logger().warn(
+                        f'Bug 0: goal DETRAS ({math.degrees(ang):.0f}deg) -> FOLLOW_WALL')
+                    self._wall_follow_step()
+                    return
                 else:
                     self._gtg_align_start = None
                 self._go_to_goal_step()
@@ -533,7 +544,7 @@ class Bug0(Node):
             # 2. El goal esta DELANTE del robot (|ang| < 90°) — si esta detras,
             #    seguir la pared es mejor que girar 180° y quedarse oscilando
             goal_ang = abs(self.goal_direction_angle())
-            goal_ahead = goal_ang < math.radians(70.0)
+            goal_ahead = goal_ang < math.radians(45.0)
             wall_lost = (left > self.wall_target * 2.5 and front_clear
                          and fw_elapsed > self.min_fw_time and goal_ahead)
             progressed = (
@@ -611,6 +622,14 @@ class Bug0(Node):
             msg = Twist()
             msg.linear.x = 0.0
             msg.angular.z = -self.turn_wmax * 0.7
+            self.cmd_pub.publish(msg)
+            return
+
+        # Pared demasiado cerca a la izquierda: frenar y girar derecha
+        if left < self.wall_target * 0.6:
+            msg = Twist()
+            msg.linear.x = 0.0
+            msg.angular.z = -self.turn_wmax * 0.5
             self.cmd_pub.publish(msg)
             return
 
